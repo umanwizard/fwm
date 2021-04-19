@@ -1,0 +1,3 @@
+This contains tile management logic (`Layout` in `src/lib.rs`) that one could use as the starting point for creating a tiling window manager, or for adding tiling window functionality to other programs (similar to vim).
+
+It is not a functioning window manager now.
