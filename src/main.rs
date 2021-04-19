@@ -66,7 +66,10 @@ impl WmState {
                 }
             }
             LayoutAction::WindowDestroyed { idx } => {
-                assert!(self.windows.remove(&idx).is_some());
+                let (_rgb, old_bounds) = self.windows.remove(&idx).unwrap();
+                if let Some(window) = window {
+                    window.invalidate_rect(Some(&wb_to_r(old_bounds)), true);
+                }
             }
             LayoutAction::WindowHidden { idx } => unimplemented!(),
         }
