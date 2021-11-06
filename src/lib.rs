@@ -71,22 +71,16 @@ pub enum Direction {
 }
 
 pub enum MoveCursor {
-    Split {
-	item: ItemIdx,
-	direction: Direction,
-    },
-    Into {
-	container: usize,
-	index: usize,
-    },
+    Split { item: ItemIdx, direction: Direction },
+    Into { container: usize, index: usize },
 }
 
 impl MoveCursor {
     pub fn item(&self) -> ItemIdx {
-	match self {
-	    MoveCursor::Split { item, .. } => *item,
-	    MoveCursor::Into { container, .. } => ItemIdx::Container(*container),
-	}
+        match self {
+            MoveCursor::Split { item, .. } => *item,
+            MoveCursor::Into { container, .. } => ItemIdx::Container(*container),
+        }
     }
 }
 
@@ -345,18 +339,18 @@ impl Layout {
                     .unwrap()
                     .children
                     .insert(index, (1.0, from));
-		container
+                container
             }
         };
         match from {
             ItemIdx::Container(idx) => self.containers[idx].as_mut().unwrap().parent = Some(to_ctr),
             ItemIdx::Window(idx) => self.windows[idx].as_mut().unwrap().parent = Some(to_ctr),
         };
-	// If we created a split, we need to update the old
-	// item's parent to be the new container.
-	// [XXX] why isn't this handled by `Layout::split` above? I must have had a reason.
-	if let MoveCursor::Split { item, .. } = to {
-	    match item {
+        // If we created a split, we need to update the old
+        // item's parent to be the new container.
+        // [XXX] why isn't this handled by `Layout::split` above? I must have had a reason.
+        if let MoveCursor::Split { item, .. } = to {
+            match item {
                 ItemIdx::Container(idx) => {
                     if idx != 0 {
                         self.containers[idx].as_mut().unwrap().parent = Some(to_ctr)
@@ -364,8 +358,7 @@ impl Layout {
                 }
                 ItemIdx::Window(idx) => self.windows[idx].as_mut().unwrap().parent = Some(to_ctr),
             };
-
-	}
+        }
         to_ctr
     }
 }
@@ -551,12 +544,19 @@ impl Layout {
         } else {
             None
         };
-	let to = match to {
-	    MoveCursor::Into { container, index } if from_parent.is_some()
-		&& container == from_parent.unwrap()
-		&& index >= idx_in_parent.unwrap() => MoveCursor::Into { container, index: index.saturating_sub(1) },
-	    _ => to
-	};
+        let to = match to {
+            MoveCursor::Into { container, index }
+                if from_parent.is_some()
+                    && container == from_parent.unwrap()
+                    && index >= idx_in_parent.unwrap() =>
+            {
+                MoveCursor::Into {
+                    container,
+                    index: index.saturating_sub(1),
+                }
+            }
+            _ => to,
+        };
         let insert_modified = self.insert(from, to);
         let mut result = vec![];
         self.layout(ItemIdx::Container(insert_modified), &mut result);

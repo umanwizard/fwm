@@ -160,7 +160,10 @@ fn main() {
                         let old_cursor_bounds = borrow.layout.bounds(cursor);
                         let actions = borrow.layout.move_(
                             ItemIdx::Window(window),
-			    MoveCursor::Into { container, index: n_ctr_children },
+                            MoveCursor::Into {
+                                container,
+                                index: n_ctr_children,
+                            },
                         );
                         for a in actions.iter().copied() {
                             borrow.update_for_action(a, w.get_window().as_ref());
@@ -181,7 +184,10 @@ fn main() {
                         let old_cursor_bounds = borrow.layout.bounds(cursor);
                         let actions = borrow.layout.move_(
                             ItemIdx::Window(window),
-			    MoveCursor::Split { item: cursor, direction: Direction::Down },			    
+                            MoveCursor::Split {
+                                item: cursor,
+                                direction: Direction::Down,
+                            },
                         );
                         for a in actions.iter().copied() {
                             borrow.update_for_action(a, w.get_window().as_ref());
@@ -202,7 +208,10 @@ fn main() {
                         let old_cursor_bounds = borrow.layout.bounds(cursor);
                         let actions = borrow.layout.move_(
                             ItemIdx::Window(window),
-			    MoveCursor::Split { item: cursor, direction: Direction::Right },
+                            MoveCursor::Split {
+                                item: cursor,
+                                direction: Direction::Right,
+                            },
                         );
                         for a in actions.iter().copied() {
                             borrow.update_for_action(a, w.get_window().as_ref());
@@ -214,7 +223,7 @@ fn main() {
                                 change_cursor(old_cursor_bounds, new_cursor_bounds, window);
                             }
                         }
-                    } else if matches!(uchar, Some('h'| 'j' | 'k' | 'l')) {
+                    } else if matches!(uchar, Some('h' | 'j' | 'k' | 'l')) {
                         let cursor = borrow.cursor;
                         let direction = match uchar.unwrap() {
                             'h' => Direction::Left,
