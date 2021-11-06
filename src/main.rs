@@ -10,7 +10,7 @@ use ::fwm::Direction;
 use ::fwm::ItemIdx;
 use ::fwm::Layout;
 use ::fwm::LayoutAction;
-use ::fwm::MoveAction;
+use ::fwm::MoveCursor;
 use ::fwm::Position;
 use ::fwm::WindowBounds;
 
@@ -160,8 +160,7 @@ fn main() {
                         let old_cursor_bounds = borrow.layout.bounds(cursor);
                         let actions = borrow.layout.move_(
                             ItemIdx::Window(window),
-                            ItemIdx::Container(container),
-                            MoveAction::ToIndex(n_ctr_children),
+			    MoveCursor::Into { container, index: n_ctr_children },
                         );
                         for a in actions.iter().copied() {
                             borrow.update_for_action(a, w.get_window().as_ref());
@@ -182,8 +181,7 @@ fn main() {
                         let old_cursor_bounds = borrow.layout.bounds(cursor);
                         let actions = borrow.layout.move_(
                             ItemIdx::Window(window),
-                            cursor,
-                            MoveAction::Split(Direction::Down),
+			    MoveCursor::Split { item: cursor, direction: Direction::Down },			    
                         );
                         for a in actions.iter().copied() {
                             borrow.update_for_action(a, w.get_window().as_ref());
@@ -204,8 +202,7 @@ fn main() {
                         let old_cursor_bounds = borrow.layout.bounds(cursor);
                         let actions = borrow.layout.move_(
                             ItemIdx::Window(window),
-                            cursor,
-                            MoveAction::Split(Direction::Right),
+			    MoveCursor::Split { item: cursor, direction: Direction::Right },
                         );
                         for a in actions.iter().copied() {
                             borrow.update_for_action(a, w.get_window().as_ref());

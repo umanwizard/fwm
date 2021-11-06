@@ -70,11 +70,24 @@ pub enum Direction {
     Right,
 }
 
-/// Used for the destination of a move
-#[derive(Debug, Clone, Eq, PartialEq, Copy)]
-pub enum MoveAction {
-    Split(Direction),
-    ToIndex(usize),
+pub enum MoveCursor {
+    Split {
+	item: ItemIdx,
+	direction: Direction,
+    },
+    Into {
+	container: usize,
+	index: usize,
+    },
+}
+
+impl MoveCursor {
+    pub fn item(&self) -> ItemIdx {
+	match self {
+	    MoveCursor::Split { item, .. } => *item,
+	    MoveCursor::Into { container, .. } => ItemIdx::Container(*container),
+	}
+    }
 }
 
 struct DescendantsIter<'a> {
@@ -318,33 +331,32 @@ impl Layout {
         }
     }
     // Doesn't layout. Returns container modified.
-    fn insert(&mut self, from: ItemIdx, to: ItemIdx, at: MoveAction) -> usize {
-        let to_ctr = match at {
-            MoveAction::Split(dir) => match dir {
-                Direction::Up => self.split(from, to, LayoutStrategy::Vertical, true),
-                Direction::Down => self.split(from, to, LayoutStrategy::Vertical, false),
-                Direction::Left => self.split(from, to, LayoutStrategy::Horizontal, true),
-                Direction::Right => self.split(from, to, LayoutStrategy::Horizontal, false),
+    fn insert(&mut self, from: ItemIdx, to: MoveCursor) -> usize {
+        let to_ctr = match to {
+            MoveCursor::Split { item, direction } => match direction {
+                Direction::Up => self.split(from, item, LayoutStrategy::Vertical, true),
+                Direction::Down => self.split(from, item, LayoutStrategy::Vertical, false),
+                Direction::Left => self.split(from, item, LayoutStrategy::Horizontal, true),
+                Direction::Right => self.split(from, item, LayoutStrategy::Horizontal, false),
             },
-            MoveAction::ToIndex(to_idx) => {
-                let to_ctr = match to {
-                    ItemIdx::Window(_) => panic!(),
-                    ItemIdx::Container(idx) => idx,
-                };
-                self.containers[to_ctr]
+            MoveCursor::Into { container, index } => {
+                self.containers[container]
                     .as_mut()
                     .unwrap()
                     .children
-                    .insert(to_idx, (1.0, from));
-                to_ctr
+                    .insert(index, (1.0, from));
+		container
             }
         };
         match from {
             ItemIdx::Container(idx) => self.containers[idx].as_mut().unwrap().parent = Some(to_ctr),
             ItemIdx::Window(idx) => self.windows[idx].as_mut().unwrap().parent = Some(to_ctr),
         };
-        if matches!(at, MoveAction::Split(_)) {
-            match to {
+	// If we created a split, we need to update the old
+	// item's parent to be the new container.
+	// [XXX] why isn't this handled by `Layout::split` above? I must have had a reason.
+	if let MoveCursor::Split { item, .. } = to {
+	    match item {
                 ItemIdx::Container(idx) => {
                     if idx != 0 {
                         self.containers[idx].as_mut().unwrap().parent = Some(to_ctr)
@@ -352,7 +364,8 @@ impl Layout {
                 }
                 ItemIdx::Window(idx) => self.windows[idx].as_mut().unwrap().parent = Some(to_ctr),
             };
-        }
+
+	}
         to_ctr
     }
 }
@@ -519,8 +532,8 @@ impl Layout {
         });
         next_idx
     }
-    pub fn move_(&mut self, from: ItemIdx, to: ItemIdx, at: MoveAction) -> Vec<LayoutAction> {
-        if self.is_ancestor(from, to) {
+    pub fn move_(&mut self, from: ItemIdx, to: MoveCursor) -> Vec<LayoutAction> {
+        if self.is_ancestor(from, to.item()) {
             panic!()
         }
         // we know `from` is not the root, because of the ancestry check above.
@@ -538,17 +551,13 @@ impl Layout {
         } else {
             None
         };
-        let at = match at {
-            MoveAction::ToIndex(idx)
-                if from_parent.is_some()
-                    && to == ItemIdx::Container(from_parent.unwrap())
-                    && idx >= idx_in_parent.unwrap() =>
-            {
-                MoveAction::ToIndex(idx.saturating_sub(1))
-            }
-            _ => at,
-        };
-        let insert_modified = self.insert(from, to, at);
+	let to = match to {
+	    MoveCursor::Into { container, index } if from_parent.is_some()
+		&& container == from_parent.unwrap()
+		&& index >= idx_in_parent.unwrap() => MoveCursor::Into { container, index: index.saturating_sub(1) },
+	    _ => to
+	};
+        let insert_modified = self.insert(from, to);
         let mut result = vec![];
         self.layout(ItemIdx::Container(insert_modified), &mut result);
         if from_parent.is_some()
