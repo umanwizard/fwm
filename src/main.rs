@@ -217,7 +217,7 @@ fn main() {
                                 change_cursor(old_cursor_bounds, new_cursor_bounds, window);
                             }
                         }
-                    } else if uchar.is_some() && matches!(uchar.unwrap(), 'h' | 'j' | 'k' | 'l') {
+                    } else if matches!(uchar, Some('h'| 'j' | 'k' | 'l')) {
                         let cursor = borrow.cursor;
                         let direction = match uchar.unwrap() {
                             'h' => Direction::Left,
