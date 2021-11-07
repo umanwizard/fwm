@@ -268,7 +268,7 @@ impl Layout {
             LayoutStrategy::Horizontal => ctr_bounds.position.x + ctr.inter,
         };
         let total_weight: f64 = ctr.children.iter().map(|(weight, _)| weight).sum();
-        let mut cursor = ctr_bounds.position;
+        let mut next_window_origin = ctr_bounds.position;
         let inter = ctr.inter;
         let mut to_fix = vec![];
         let mut cumsum = 0.0;
@@ -280,7 +280,7 @@ impl Layout {
                 LayoutStrategy::Vertical => {
                     let new_y = (begin as f64 + cumsum * available_area.height as f64) as usize;
                     AreaSize {
-                        height: new_y - cursor.y,
+                        height: new_y - next_window_origin.y,
                         width: available_area.width,
                     }
                 }
@@ -288,22 +288,22 @@ impl Layout {
                     let new_x = (begin as f64 + cumsum * available_area.width as f64) as usize;
                     AreaSize {
                         height: available_area.height,
-                        width: new_x - cursor.x,
+                        width: new_x - next_window_origin.x,
                     }
                 }
             };
             let new_bounds = WindowBounds {
                 content,
-                position: cursor,
+                position: next_window_origin,
             };
-            cursor = match strat {
+            next_window_origin = match strat {
                 LayoutStrategy::Vertical => Position {
-                    x: cursor.x,
-                    y: cursor.y + content.height + inter,
+                    x: next_window_origin.x,
+                    y: next_window_origin.y + content.height + inter,
                 },
                 LayoutStrategy::Horizontal => Position {
-                    y: cursor.y,
-                    x: cursor.x + content.width + inter,
+                    y: next_window_origin.y,
+                    x: next_window_origin.x + content.width + inter,
                 },
             };
 
@@ -525,7 +525,7 @@ impl Layout {
         });
         next_idx
     }
-    pub fn move_(&mut self, from: ItemIdx, to: MoveCursor) -> Vec<LayoutAction> {
+    pub fn r#move(&mut self, from: ItemIdx, to: MoveCursor) -> Vec<LayoutAction> {
         if self.is_ancestor(from, to.item()) {
             panic!()
         }
@@ -574,11 +574,11 @@ impl Layout {
         &self,
         from: ItemIdx,
         dir: Direction,
-        cursor: Option<Position>,
+        point: Option<Position>,
     ) -> Option<ItemIdx> {
         let mut ancestor = None;
         let mut cur = from;
-        let cursor = cursor.unwrap_or_else(|| self.bounds(from).position);
+        let point = point.unwrap_or_else(|| self.bounds(from).position);
         while let Some(parent) = self.parent_container(cur) {
             let parent_ctr = self.containers[parent].as_ref().unwrap();
             let strat = parent_ctr.strategy;
@@ -620,7 +620,7 @@ impl Layout {
                         ctr.children.iter().last().unwrap().1
                     }
                 } else {
-                    let Position { x, y } = cursor;
+                    let Position { x, y } = point;
                     let seek_coord = if move_horizontal { y } else { x };
                     let idx = ctr
                         .children
