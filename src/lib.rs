@@ -62,7 +62,7 @@ pub struct Layout {
     root_bounds: WindowBounds,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Copy)]
+#[derive(Debug, Clone, Eq, PartialEq, Copy, Serialize, Deserialize)]
 pub enum Direction {
     Up,
     Down,
@@ -70,6 +70,7 @@ pub enum Direction {
     Right,
 }
 
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum MoveCursor {
     Split { item: ItemIdx, direction: Direction },
     Into { container: usize, index: usize },
@@ -364,6 +365,31 @@ impl Layout {
 }
 
 impl Layout {
+    pub fn cursor_before(&self, point: ItemIdx) -> MoveCursor {
+        match self.parent_container(point) {
+            Some(parent) => {
+                let parent_ctr = self.containers[parent].as_ref().unwrap();
+                let index_in_parent = parent_ctr
+                    .children
+                    .iter()
+                    .position(|(_, child_idx)| *child_idx == point)
+                    .unwrap();
+		MoveCursor::Into {
+		    container: parent,
+		    index: index_in_parent,
+		}
+            },
+            None => {
+		MoveCursor::Split {
+		    item: ItemIdx::Container(0),
+		    direction: match self.containers[0].as_ref().unwrap().strategy {
+			LayoutStrategy::Horizontal => Direction::Left,
+			LayoutStrategy::Vertical => Direction::Up,
+		    }
+		}
+	    }
+        }
+    }
     pub fn new_in_bounds(bounds: WindowBounds) -> Self {
         let mut this = Self {
             windows: Default::default(),
@@ -383,6 +409,7 @@ impl Layout {
         self.windows.iter().filter_map(Option::as_ref)
     }
     pub fn resize(&mut self, bounds: WindowBounds) -> Vec<LayoutAction> {
+        println!("Resizing in wb: {:?}", bounds);
         self.containers[0].as_mut().unwrap().bounds = bounds;
         self.root_bounds = bounds;
         let mut out = vec![];
@@ -656,6 +683,82 @@ impl Layout {
         match item {
             ItemIdx::Container(idx) => self.containers[idx].as_ref().unwrap().bounds,
             ItemIdx::Window(idx) => self.windows[idx].as_ref().unwrap().bounds,
+        }
+    }
+    /// Get the bounds of the gap before element `index` in the container.
+    /// `index` may be equal to the container's length, in which case
+    /// this function returns the gap at the end.
+    pub fn inter_bounds(&self, container: usize, index: usize) -> WindowBounds {
+        let container = self.containers[container].as_ref().unwrap();
+        assert!(index <= container.children.len());
+        if container.children.is_empty() {
+            return container.bounds;
+        }
+        if index == container.children.len() {
+            return match container.strategy {
+                LayoutStrategy::Horizontal => WindowBounds {
+                    content: AreaSize {
+                        height: container.bounds.content.height,
+                        width: 0,
+                    },
+                    position: Position {
+                        x: container.bounds.position.x + container.bounds.content.width,
+                        y: container.bounds.position.y,
+                    },
+                },
+                LayoutStrategy::Vertical => WindowBounds {
+                    content: AreaSize {
+                        height: 0,
+                        width: container.bounds.content.width,
+                    },
+                    position: Position {
+                        x: container.bounds.position.x,
+                        y: container.bounds.position.y + container.bounds.content.height,
+                    },
+                },
+            };
+        }
+        let total_inter = container.inter * container.children.len().saturating_sub(1);
+        let total_weight: f64 = container
+            .children
+            .iter()
+            .map(|(weight, _child)| weight)
+            .sum();
+        let main_dim_bound = match container.strategy {
+            LayoutStrategy::Horizontal => container.bounds.content.width,
+            LayoutStrategy::Vertical => container.bounds.content.height,
+        };
+        let content_size = main_dim_bound - total_inter;
+        // The distance from the
+        // beginning of the container
+        // to the end of the `i-1`th child
+        // (or 0, when i is 0)
+        let mut cum_distance = 0.0;
+        for i in 0..index {
+            let normalized = container.children[i].0 / total_weight;
+            cum_distance += normalized * (content_size as f64) + container.inter as f64;
+        }
+        match container.strategy {
+            LayoutStrategy::Horizontal => WindowBounds {
+                content: AreaSize {
+                    height: container.bounds.content.height,
+                    width: container.inter,
+                },
+                position: Position {
+                    x: container.bounds.position.x + cum_distance as usize,
+                    y: container.bounds.position.y,
+                },
+            },
+            LayoutStrategy::Vertical => WindowBounds {
+                content: AreaSize {
+                    height: container.inter,
+                    width: container.bounds.content.width,
+                },
+                position: Position {
+                    x: container.bounds.position.x,
+                    y: container.bounds.position.y + cum_distance as usize,
+                },
+            },
         }
     }
 }

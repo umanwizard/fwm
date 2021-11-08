@@ -1,9 +1,8 @@
-use gdk::EventKey;
 use gdk::ModifierType;
 use gdk::WindowExt;
 use gio::prelude::*;
 use gtk::prelude::*;
-use gtk::{Allocation, Application, ApplicationWindow, Button, DrawingArea};
+use gtk::{Allocation, Application, ApplicationWindow, DrawingArea};
 
 use ::fwm::AreaSize;
 use ::fwm::Direction;
@@ -42,9 +41,27 @@ struct WmState {
     pub windows: HashMap<usize, (Rgb, WindowBounds)>,
     pub layout: Layout,
     pub point: ItemIdx,
+    pub cursor: Option<MoveCursor>,
 }
 
 impl WmState {
+    /// Run a closure, and then invalidate the proper rectangles if it
+    /// caused the bounds of the point or cursor to change.
+    pub fn do_and_recompute<F>(&mut self, closure: F, window: Option<&gdk::Window>)
+    where
+        F: FnOnce(&mut Self),
+    {
+        let old_point_bounds = self.layout.bounds(self.point);
+        let old_cursor_bounds = self.cursor.map(|cursor| self.layout.bounds(cursor.item()));
+        closure(self);
+        let new_point_bounds = self.layout.bounds(self.point);
+        let new_cursor_bounds = self.cursor.map(|cursor| self.layout.bounds(cursor.item()));
+
+        if let Some(window) = window {
+            change_point(Some(old_point_bounds), Some(new_point_bounds), window);
+            change_cursor(old_cursor_bounds, new_cursor_bounds, window);
+        }
+    }
     pub fn update_for_action(&mut self, action: LayoutAction, window: Option<&gdk::Window>) {
         match action {
             LayoutAction::NewWindowBounds { idx, bounds } => {
@@ -108,22 +125,29 @@ fn wb_to_r(wb: WindowBounds) -> gdk::Rectangle {
     }
 }
 
-fn change_point(old: WindowBounds, new: WindowBounds, window: gdk::Window) {
+fn change_point(old: Option<WindowBounds>, new: Option<WindowBounds>, window: &gdk::Window) {
     if old == new {
         return;
     }
-    let (mut r1, mut r2) = (wb_to_r(old), wb_to_r(new));
-    r1.x = r1.x.saturating_sub((POINT_LINE_WIDTH / 2.0) as i32);
-    r1.y = r1.y.saturating_sub((POINT_LINE_WIDTH / 2.0) as i32);
-    r2.x = r2.x.saturating_sub((POINT_LINE_WIDTH / 2.0) as i32);
-    r2.y = r2.y.saturating_sub((POINT_LINE_WIDTH / 2.0) as i32);
-    r1.width += POINT_LINE_WIDTH as i32;
-    r1.height += POINT_LINE_WIDTH as i32;
-    r2.width += POINT_LINE_WIDTH as i32;
-    r2.height += POINT_LINE_WIDTH as i32;
-    window.invalidate_rect(Some(&r1), true);
-    window.invalidate_rect(Some(&r2), true);
+    let (r1, r2) = (old.map(|old| wb_to_r(old)), new.map(|new| wb_to_r(new)));
+    if let Some(mut r1) = r1 {
+        r1.x = r1.x.saturating_sub((POINT_LINE_WIDTH / 2.0) as i32);
+        r1.y = r1.y.saturating_sub((POINT_LINE_WIDTH / 2.0) as i32);
+        r1.width += POINT_LINE_WIDTH as i32;
+        r1.height += POINT_LINE_WIDTH as i32;
+        window.invalidate_rect(Some(&r1), true);
+    }
+    if let Some(mut r2) = r2 {
+        r2.x = r2.x.saturating_sub((POINT_LINE_WIDTH / 2.0) as i32);
+        r2.y = r2.y.saturating_sub((POINT_LINE_WIDTH / 2.0) as i32);
+        r2.width += POINT_LINE_WIDTH as i32;
+        r2.height += POINT_LINE_WIDTH as i32;
+        window.invalidate_rect(Some(&r2), true);
+    }
 }
+
+// TODO - change cursor should do something different.
+use change_point as change_cursor;
 
 fn main() {
     let application =
@@ -138,6 +162,7 @@ fn main() {
             windows: Default::default(),
             layout: Layout::new_in_bounds(Default::default()),
             point: ItemIdx::Container(0),
+            cursor: None,
         }));
         window.connect_key_press_event({
             let state = state.clone();
@@ -150,122 +175,121 @@ fn main() {
                 //let shift = state.contains(ModifierType::SHIFT_MASK);
                 if ctrl {
                     if uchar == Some('\r') {
-                        let window = borrow.layout.alloc_window();
-                        borrow
-                            .windows
-                            .insert(window, (thread_rng().gen(), Default::default()));
-                        let container = borrow.layout.nearest_container(borrow.point);
-                        let n_ctr_children = borrow.layout.children(container).len();
-                        let point = borrow.point;
-                        let old_point_bounds = borrow.layout.bounds(point);
-                        let actions = borrow.layout.r#move(
-                            ItemIdx::Window(window),
-                            MoveCursor::Into {
-                                container,
-                                index: n_ctr_children,
+                        borrow.do_and_recompute(
+                            |wm| {
+                                let window = wm.layout.alloc_window();
+                                wm.windows
+                                    .insert(window, (thread_rng().gen(), Default::default()));
+                                let container = wm.layout.nearest_container(wm.point);
+                                let n_ctr_children = wm.layout.children(container).len();
+                                let actions = wm.layout.r#move(
+                                    ItemIdx::Window(window),
+                                    MoveCursor::Into {
+                                        container,
+                                        index: n_ctr_children,
+                                    },
+                                );
+                                for a in actions.iter().copied() {
+                                    wm.update_for_action(a, w.get_window().as_ref());
+                                }
+                                wm.point = ItemIdx::Window(window);
                             },
+                            w.get_window().as_ref(),
                         );
-                        for a in actions.iter().copied() {
-                            borrow.update_for_action(a, w.get_window().as_ref());
-                        }
-                        borrow.point = ItemIdx::Window(window);
-                        let new_point_bounds = borrow.layout.bounds(borrow.point);
-                        if let Some(window) = w.get_window() {
-                            if old_point_bounds != new_point_bounds {
-                                change_point(old_point_bounds, new_point_bounds, window);
-                            }
-                        }
                     } else if uchar == Some('v') {
-                        let window = borrow.layout.alloc_window();
-                        borrow
-                            .windows
-                            .insert(window, (thread_rng().gen(), Default::default()));
-                        let point = borrow.point;
-                        let old_point_bounds = borrow.layout.bounds(point);
-                        let actions = borrow.layout.r#move(
-                            ItemIdx::Window(window),
-                            MoveCursor::Split {
-                                item: point,
-                                direction: Direction::Down,
+                        borrow.do_and_recompute(
+                            |wm| {
+                                let window = wm.layout.alloc_window();
+                                wm.windows
+                                    .insert(window, (thread_rng().gen(), Default::default()));
+                                let point = wm.point;
+                                let actions = wm.layout.r#move(
+                                    ItemIdx::Window(window),
+                                    MoveCursor::Split {
+                                        item: point,
+                                        direction: Direction::Down,
+                                    },
+                                );
+                                for a in actions.iter().copied() {
+                                    wm.update_for_action(a, w.get_window().as_ref());
+                                }
+                                wm.point = ItemIdx::Window(window);
                             },
+                            w.get_window().as_ref(),
                         );
-                        for a in actions.iter().copied() {
-                            borrow.update_for_action(a, w.get_window().as_ref());
-                        }
-                        borrow.point = ItemIdx::Window(window);
-                        let new_point_bounds = borrow.layout.bounds(borrow.point);
-                        if let Some(window) = w.get_window() {
-                            if old_point_bounds != new_point_bounds {
-                                change_point(old_point_bounds, new_point_bounds, window);
-                            }
-                        }
                     } else if uchar == Some('m') {
-                        let window = borrow.layout.alloc_window();
-                        borrow
-                            .windows
-                            .insert(window, (thread_rng().gen(), Default::default()));
-                        let point = borrow.point;
-                        let old_point_bounds = borrow.layout.bounds(point);
-                        let actions = borrow.layout.r#move(
-                            ItemIdx::Window(window),
-                            MoveCursor::Split {
-                                item: point,
-                                direction: Direction::Right,
+                        borrow.do_and_recompute(
+                            |wm| {
+                                let window = wm.layout.alloc_window();
+                                wm.windows
+                                    .insert(window, (thread_rng().gen(), Default::default()));
+                                let point = wm.point;
+                                let actions = wm.layout.r#move(
+                                    ItemIdx::Window(window),
+                                    MoveCursor::Split {
+                                        item: point,
+                                        direction: Direction::Right,
+                                    },
+                                );
+                                for a in actions.iter().copied() {
+                                    wm.update_for_action(a, w.get_window().as_ref());
+                                }
+                                wm.point = ItemIdx::Window(window);
                             },
+                            w.get_window().as_ref(),
                         );
-                        for a in actions.iter().copied() {
-                            borrow.update_for_action(a, w.get_window().as_ref());
-                        }
-                        borrow.point = ItemIdx::Window(window);
-                        let new_point_bounds = borrow.layout.bounds(borrow.point);
-                        if let Some(window) = w.get_window() {
-                            if old_point_bounds != new_point_bounds {
-                                change_point(old_point_bounds, new_point_bounds, window);
-                            }
-                        }
                     } else if matches!(uchar, Some('h' | 'j' | 'k' | 'l')) {
-                        let point = borrow.point;
-                        let direction = match uchar.unwrap() {
-                            'h' => Direction::Left,
-                            'k' => Direction::Up,
-                            'l' => Direction::Right,
-                            'j' => Direction::Down,
-                            _ => unreachable!(),
-                        };
-                        if let Some(new_point) = borrow.layout.navigate(point, direction, None) {
-                            borrow.point = new_point;
-                            let old_point_bounds = borrow.layout.bounds(point);
-                            let new_point_bounds = borrow.layout.bounds(new_point);
-                            if let Some(window) = w.get_window() {
-                                change_point(old_point_bounds, new_point_bounds, window);
-                            }
-                        }
+                        borrow.do_and_recompute(
+                            |wm| {
+                                let point = wm.point;
+                                let direction = match uchar.unwrap() {
+                                    'h' => Direction::Left,
+                                    'k' => Direction::Up,
+                                    'l' => Direction::Right,
+                                    'j' => Direction::Down,
+                                    _ => unreachable!(),
+                                };
+                                if let Some(new_point) = wm.layout.navigate(point, direction, None)
+                                {
+                                    wm.point = new_point;
+                                }
+                            },
+                            w.get_window().as_ref(),
+                        );
+                    } else if matches!(uchar, Some('H' | 'J' | 'K' | 'L')) {
+                        borrow.do_and_recompute(
+                            |wm| {
+				let cursor = wm.cursor.unwrap_or_else(|| wm.layout.cursor_before(wm.point));
+				todo!()
+                            },
+                            w.get_window().as_ref(),
+                        );
                     } else if uchar == Some('"') {
-                        let point = borrow.point;
-                        let old_point_bounds = borrow.layout.bounds(point);
-                        let new_point = borrow.layout.topological_next(point);
-                        let actions = borrow.layout.destroy(point);
-                        let new_point =
-                            new_point.unwrap_or_else(|| borrow.layout.topological_last());
-                        let new_point_bounds = borrow.layout.bounds(new_point);
-                        borrow.point = new_point;
-                        for a in actions.iter().copied() {
-                            borrow.update_for_action(a, w.get_window().as_ref());
-                        }
-                        if let Some(window) = w.get_window() {
-                            change_point(old_point_bounds, new_point_bounds, window);
-                        }
+                        borrow.do_and_recompute(
+                            |wm| {
+                                let point = wm.point;
+                                let new_point = wm.layout.topological_next(point);
+                                let actions = wm.layout.destroy(point);
+                                let new_point =
+                                    new_point.unwrap_or_else(|| wm.layout.topological_last());
+                                wm.point = new_point;
+                                for a in actions.iter().copied() {
+                                    wm.update_for_action(a, w.get_window().as_ref());
+                                }
+                            },
+                            w.get_window().as_ref(),
+                        );
                     } else if uchar == Some('a') {
-                        let point = borrow.point;
-                        if let Some(parent) = borrow.layout.parent_container(point) {
-                            let new_point = ItemIdx::Container(parent);
-                            borrow.point = new_point;
-                            let old_point_bounds = borrow.layout.bounds(point);
-                            let new_point_bounds = borrow.layout.bounds(new_point);
-                            if let Some(window) = w.get_window() {
-                                change_point(old_point_bounds, new_point_bounds, window);
-                            }
-                        }
+                        borrow.do_and_recompute(
+                            |wm| {
+                                let point = wm.point;
+                                if let Some(parent) = wm.layout.parent_container(point) {
+                                    let new_point = ItemIdx::Container(parent);
+                                    wm.point = new_point;
+                                }
+                            },
+                            w.get_window().as_ref(),
+                        );
                     } else if uchar == Some('p') {
                         println!("{}", serde_json::to_string_pretty(&borrow.layout).unwrap());
                     }
@@ -309,6 +333,48 @@ fn main() {
                 } = borrow.layout.bounds(point);
                 cr.rectangle(x as f64, y as f64, width as f64, height as f64);
                 cr.stroke();
+                if let Some(cursor) = borrow.cursor {
+                    cr.set_source_rgb(1.0, 0.0, 0.0);
+                    cr.set_line_width(POINT_LINE_WIDTH);
+
+                    match cursor {
+                        MoveCursor::Split { item, direction } => {
+                            let WindowBounds {
+                                content:
+                                    AreaSize {
+                                        mut height,
+                                        mut width,
+                                    },
+                                position: Position { mut x, mut y },
+                            } = borrow.layout.bounds(item);
+                            match direction {
+                                Direction::Up => {
+                                    height /= 2;
+                                }
+                                Direction::Down => {
+                                    height /= 2;
+                                    y += height;
+                                }
+                                Direction::Left => {
+                                    width /= 2;
+                                }
+                                Direction::Right => {
+                                    width /= 2;
+                                    x += width;
+                                }
+                            }
+                            cr.rectangle(x as f64, y as f64, width as f64, height as f64);
+                        }
+                        MoveCursor::Into { container, index } => {
+                            let WindowBounds {
+                                content: AreaSize { height, width },
+                                position: Position { x, y },
+                            } = borrow.layout.inter_bounds(container, index);
+                            cr.rectangle(x as f64, y as f64, width as f64, height as f64);
+                        }
+                    }
+                    cr.stroke();
+                }
                 Inhibit(true)
             }
         });
