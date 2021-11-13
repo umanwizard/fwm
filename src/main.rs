@@ -1,3 +1,4 @@
+use fwm::ChildLocation;
 use gdk::ModifierType;
 use gdk::WindowExt;
 use gio::prelude::*;
@@ -53,10 +54,15 @@ impl WmState {
     {
         let old_point_bounds = self.layout.bounds(self.point);
         let old_cursor_bounds = self.cursor.map(|cursor| self.layout.bounds(cursor.item()));
+        println!("Old cursor: {:?}", self.cursor);
         closure(self);
         let new_point_bounds = self.layout.bounds(self.point);
         let new_cursor_bounds = self.cursor.map(|cursor| self.layout.bounds(cursor.item()));
-
+        println!("New cursor: {:?}", self.cursor);
+        println!(
+            "new_cursor_bounds: {:?}; old_cursor_bounds: {:?}",
+            new_cursor_bounds, old_cursor_bounds
+        );
         if let Some(window) = window {
             change_point(Some(old_point_bounds), Some(new_point_bounds), window);
             change_cursor(old_cursor_bounds, new_cursor_bounds, window);
@@ -126,9 +132,6 @@ fn wb_to_r(wb: WindowBounds) -> gdk::Rectangle {
 }
 
 fn change_point(old: Option<WindowBounds>, new: Option<WindowBounds>, window: &gdk::Window) {
-    if old == new {
-        return;
-    }
     let (r1, r2) = (old.map(|old| wb_to_r(old)), new.map(|new| wb_to_r(new)));
     if let Some(mut r1) = r1 {
         r1.x = r1.x.saturating_sub((POINT_LINE_WIDTH / 2.0) as i32);
@@ -259,8 +262,44 @@ fn main() {
                     } else if matches!(uchar, Some('H' | 'J' | 'K' | 'L')) {
                         borrow.do_and_recompute(
                             |wm| {
-				let cursor = wm.cursor.unwrap_or_else(|| wm.layout.cursor_before(wm.point));
-				todo!()
+                                let cursor = wm
+                                    .cursor
+                                    .unwrap_or_else(|| wm.layout.cursor_before(wm.point));
+                                let direction = match uchar.unwrap() {
+                                    'H' => Direction::Left,
+                                    'K' => Direction::Up,
+                                    'L' => Direction::Right,
+                                    'J' => Direction::Down,
+                                    _ => unreachable!(),
+                                };
+                                let new_cursor = match cursor {
+                                    MoveCursor::Split {
+                                        item,
+                                        direction: split_direction,
+                                    } => wm
+                                        .layout
+                                        .navigate(item, direction, None)
+                                        .map(|new_item| MoveCursor::Split {
+                                            item: new_item,
+                                            direction: split_direction,
+                                        })
+                                        .unwrap_or(cursor),
+                                    MoveCursor::Into { container, index } => wm
+                                        .layout
+                                        .navigate2(
+                                            ChildLocation { container, index },
+                                            direction,
+                                            None,
+                                            true,
+                                            false,
+                                        )
+                                        .map(|ChildLocation { container, index }| {
+                                            MoveCursor::Into { container, index }
+                                        })
+                                        .unwrap_or(cursor),
+                                };
+                                wm.cursor = (new_cursor != wm.layout.cursor_before(wm.point))
+                                    .then(|| new_cursor)
                             },
                             w.get_window().as_ref(),
                         );

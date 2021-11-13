@@ -70,7 +70,7 @@ pub enum Direction {
     Right,
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub enum MoveCursor {
     Split { item: ItemIdx, direction: Direction },
     Into { container: usize, index: usize },
@@ -97,6 +97,29 @@ impl<'a> DescendantsIter<'a> {
             layout,
             next: Some(item),
             orig: item,
+        }
+    }
+}
+
+trait IterExt {
+    type Item;
+
+    fn unwrap_one(self) -> Self::Item;
+}
+
+impl<I> IterExt for I
+where
+    I: IntoIterator,
+{
+    type Item = <Self as IntoIterator>::Item;
+
+    fn unwrap_one(self) -> Self::Item {
+        let mut i = self.into_iter();
+        let first = i.next();
+        let second = i.next();
+        match (first, second) {
+            (Some(item), None) => item,
+            _ => panic!("Expected exactly one item"),
         }
     }
 }
@@ -362,6 +385,33 @@ impl Layout {
         }
         to_ctr
     }
+    /// Returns None for one past end
+    fn item_from_child_location(&self, cl: ChildLocation) -> Option<ItemIdx> {
+        let ChildLocation { container, index } = cl;
+        let ctr = self.containers[container].as_ref().unwrap();
+        assert!(index <= ctr.children.len());
+        ctr.children.get(index).map(|(_, idx)| *idx)
+    }
+    /// Returns None for the root
+    fn child_location(&self, item: ItemIdx) -> Option<ChildLocation> {
+        self.parent_container(item).map(|container| {
+            let index = self.containers[container]
+                .as_ref()
+                .unwrap()
+                .children
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (_, child))| (*child == item).then(|| i))
+                .unwrap_one();
+            ChildLocation { container, index }
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct ChildLocation {
+    pub container: usize,
+    pub index: usize,
 }
 
 impl Layout {
@@ -374,20 +424,18 @@ impl Layout {
                     .iter()
                     .position(|(_, child_idx)| *child_idx == point)
                     .unwrap();
-		MoveCursor::Into {
-		    container: parent,
-		    index: index_in_parent,
-		}
+                MoveCursor::Into {
+                    container: parent,
+                    index: index_in_parent,
+                }
+            }
+            None => MoveCursor::Split {
+                item: ItemIdx::Container(0),
+                direction: match self.containers[0].as_ref().unwrap().strategy {
+                    LayoutStrategy::Horizontal => Direction::Left,
+                    LayoutStrategy::Vertical => Direction::Up,
+                },
             },
-            None => {
-		MoveCursor::Split {
-		    item: ItemIdx::Container(0),
-		    direction: match self.containers[0].as_ref().unwrap().strategy {
-			LayoutStrategy::Horizontal => Direction::Left,
-			LayoutStrategy::Vertical => Direction::Up,
-		    }
-		}
-	    }
         }
     }
     pub fn new_in_bounds(bounds: WindowBounds) -> Self {
@@ -603,70 +651,157 @@ impl Layout {
         dir: Direction,
         point: Option<Position>,
     ) -> Option<ItemIdx> {
+        if from == ItemIdx::Container(0) {
+            None
+        } else {
+            self.navigate2(self.child_location(from).unwrap(), dir, point, false, true)
+                .map(|cl| self.item_from_child_location(cl).unwrap())
+        }
+    }
+    pub fn navigate2(
+        &self,
+        ChildLocation {
+            container: parent_container_idx,
+            index: mut index_in_parent,
+        }: ChildLocation,
+        dir: Direction,
+        point: Option<Position>,
+        // whether we are navigating among the space _between_ items
+        // (e.g., for a cursor). If true, the returned location is allowed to
+        // have index equal to the container's length.
+        between_items: bool,
+        // whether to descend into items from the same container
+        may_descend: bool,
+    ) -> Option<ChildLocation> {
+        let orig_parent_container_idx = parent_container_idx;
+        //        let mut ancestor = None;
+        // let mut cur = from;
+        let parent_container = self.containers[parent_container_idx].as_ref().unwrap();
+        assert!(index_in_parent <= parent_container.children.len());
+        assert!(between_items || index_in_parent < parent_container.children.len());
+        let point = point.unwrap_or_else(|| {
+            parent_container
+                .children
+                .get(index_in_parent)
+                .map(|&(_weight, child)| self.bounds(child).position)
+                .unwrap_or_else(|| match parent_container.strategy {
+                    LayoutStrategy::Horizontal => Position {
+                        x: parent_container.bounds.position.x
+                            + parent_container.bounds.content.width,
+                        y: parent_container.bounds.position.y,
+                    },
+                    LayoutStrategy::Vertical => Position {
+                        x: parent_container.bounds.position.x,
+                        y: parent_container.bounds.position.y
+                            + parent_container.bounds.content.height,
+                    },
+                })
+        });
+
+        let mut parent_container_idx = Some(parent_container_idx);
         let mut ancestor = None;
-        let mut cur = from;
-        let point = point.unwrap_or_else(|| self.bounds(from).position);
-        while let Some(parent) = self.parent_container(cur) {
-            let parent_ctr = self.containers[parent].as_ref().unwrap();
+
+        while let Some(parent_ctr_idx) = parent_container_idx {
+            let parent_ctr = self.containers[parent_ctr_idx].as_ref().unwrap();
             let strat = parent_ctr.strategy;
             let can_go_back = ((dir == Direction::Left && strat == LayoutStrategy::Horizontal)
                 || (dir == Direction::Up && strat == LayoutStrategy::Vertical))
-                && parent_ctr.children[0].1 != cur;
+                && index_in_parent > 0;
             if can_go_back {
-                let index_in_parent = parent_ctr
-                    .children
-                    .iter()
-                    .position(|(_weight, child)| *child == cur)
-                    .unwrap();
-                ancestor = Some(parent_ctr.children[index_in_parent - 1].1);
+                ancestor = Some(ChildLocation {
+                    container: parent_ctr_idx,
+                    index: index_in_parent - 1,
+                });
                 break;
             }
             let can_go_fwd = ((dir == Direction::Right && strat == LayoutStrategy::Horizontal)
                 || (dir == Direction::Down && strat == LayoutStrategy::Vertical))
-                && parent_ctr.children.last().unwrap().1 != cur;
+                && index_in_parent < parent_ctr.children.len() + (between_items as usize) - 1;
             if can_go_fwd {
-                let index_in_parent = parent_ctr
-                    .children
-                    .iter()
-                    .position(|(_weight, child)| *child == cur)
-                    .unwrap();
-                ancestor = Some(parent_ctr.children[index_in_parent + 1].1);
+                ancestor = Some(ChildLocation {
+                    container: parent_ctr_idx,
+                    index: index_in_parent + 1,
+                });
                 break;
             }
-            cur = ItemIdx::Container(parent);
+            parent_container_idx = self.parent_container(ItemIdx::Container(parent_ctr_idx));
+            if let Some(next) = parent_container_idx {
+                index_in_parent = self.containers[next]
+                    .as_ref()
+                    .unwrap()
+                    .children
+                    .iter()
+                    .enumerate()
+                    .find(|(_i, (_weight, child))| *child == ItemIdx::Container(parent_ctr_idx))
+                    .map(|(i, (_weight, _child))| i)
+                    .unwrap();
+            }
         }
         let move_horizontal = (dir == Direction::Left || dir == Direction::Right);
         let move_to_first = (dir == Direction::Right || dir == Direction::Down);
-        ancestor.map(|mut cur| {
-            while let ItemIdx::Container(c_idx) = cur {
-                let ctr = self.containers[c_idx].as_ref().unwrap();
-                cur = if move_horizontal == (ctr.strategy == LayoutStrategy::Horizontal) {
-                    if move_to_first {
-                        ctr.children[0].1
-                    } else {
-                        ctr.children.iter().last().unwrap().1
-                    }
-                } else {
-                    let Position { x, y } = point;
-                    let seek_coord = if move_horizontal { y } else { x };
-                    let idx = ctr
+        eprintln!("Ancestor is {:?}", ancestor);
+        if may_descend
+            || !matches!(
+                ancestor,
+                Some(ChildLocation {
+                    container,
+                    ..
+                }) if container == orig_parent_container_idx
+            )
+        {
+            ancestor.map(
+                |ChildLocation {
+                     mut container,
+                     mut index,
+                 }| {
+                    while let Some(ItemIdx::Container(c_idx)) = self.containers[container]
+                        .as_ref()
+                        .unwrap()
                         .children
-                        .iter()
-                        .position(|&(_weight, child)| {
-                            let bounds = self.bounds(child);
-                            let (child_lb, child_ub) = if move_horizontal {
-                                (bounds.position.y, bounds.position.y + bounds.content.height)
+                        .get(index)
+                        .map(|(_w, idx)| *idx)
+                    {
+                        let ctr = self.containers[c_idx].as_ref().unwrap();
+                        container = c_idx;
+                        index = if move_horizontal == (ctr.strategy == LayoutStrategy::Horizontal) {
+                            if move_to_first {
+                                0
+                            } else if between_items {
+                                ctr.children.len()
                             } else {
-                                (bounds.position.x, bounds.position.x + bounds.content.width)
-                            };
-                            child_lb <= seek_coord && seek_coord < child_ub
-                        })
-                        .unwrap_or(0);
-                    ctr.children[idx].1
-                }
-            }
-            cur
-        })
+                                ctr.children.len() - 1
+                            }
+                        } else {
+                            let Position { x, y } = point;
+                            let seek_coord = if move_horizontal { y } else { x };
+                            let idx = ctr
+                                .children
+                                .iter()
+                                .position(|&(_weight, child)| {
+                                    let bounds = self.bounds(child);
+                                    let (child_lb, child_ub) = if move_horizontal {
+                                        (
+                                            bounds.position.y,
+                                            bounds.position.y + bounds.content.height,
+                                        )
+                                    } else {
+                                        (
+                                            bounds.position.x,
+                                            bounds.position.x + bounds.content.width,
+                                        )
+                                    };
+                                    child_lb <= seek_coord && seek_coord < child_ub
+                                })
+                                .unwrap_or(0);
+                            idx
+                        }
+                    }
+                    ChildLocation { container, index }
+                },
+            )
+        } else {
+            ancestor
+        }
     }
     pub fn children(&self, container: usize) -> &[(f64, ItemIdx)] {
         &self.containers[container].as_ref().unwrap().children
@@ -674,7 +809,7 @@ impl Layout {
     pub fn nearest_container(&self, item: ItemIdx) -> usize {
         match item {
             ItemIdx::Container(c_idx) => c_idx,
-            ItemIdx::Window(w_idx) => {
+            ItemIdx::Window(_) => {
                 self.nearest_container(ItemIdx::Container(self.parent_container(item).unwrap()))
             }
         }
