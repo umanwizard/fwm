@@ -34,7 +34,7 @@ pub struct WindowBounds {
     pub position: Position,
 }
 
-#[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize, Hash)]
 pub enum ItemIdx {
     Window(usize),
     Container(usize),
@@ -339,13 +339,13 @@ impl Layout {
             match idx {
                 ItemIdx::Window(w_idx) => {
                     self.windows[w_idx].as_mut().unwrap().bounds = bounds;
-                    out.push(LayoutAction::NewWindowBounds { idx: w_idx, bounds });
                 }
                 ItemIdx::Container(c_idx) => {
                     self.containers[c_idx].as_mut().unwrap().bounds = bounds;
                     self.layout(idx, out);
                 }
             }
+            out.push(LayoutAction::NewBounds { idx, bounds });
         }
     }
     // Doesn't layout. Returns container modified.
@@ -511,10 +511,7 @@ impl Layout {
         let mut result = to_destroy
             .iter()
             .copied()
-            .filter_map(|descendant| match descendant {
-                ItemIdx::Window(idx) => Some(LayoutAction::WindowDestroyed { idx }),
-                ItemIdx::Container(_) => None,
-            })
+            .map(|descendant| LayoutAction::ItemDestroyed { idx: descendant })
             .collect::<Vec<_>>();
         let parent = self.parent_container(item);
         for item in to_destroy.iter().copied() {
@@ -900,10 +897,10 @@ impl Layout {
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub enum LayoutAction {
-    /// A window has moved or been created.
-    NewWindowBounds { idx: usize, bounds: WindowBounds },
-    /// A window has been destroyed.
-    WindowDestroyed { idx: usize },
+    /// An item has moved or been created.
+    NewBounds { idx: ItemIdx, bounds: WindowBounds },
+    /// An item has been destroyed.
+    ItemDestroyed { idx: ItemIdx },
     /// A window still exists, but is no longer visible.
-    WindowHidden { idx: usize },
+    ItemHidden { idx: ItemIdx },
 }
