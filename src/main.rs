@@ -331,7 +331,6 @@ impl WmState {
                     self.update_frame_bounds(idx);
                 }
                 if let ItemIdx::Window(idx) = idx {
-                    let window_bounds = frame_bounds_to_window_bounds(bounds);
                     if let Some(cb) = self.client_windows.get_mut(&idx) {
                         cb.1 = bounds;
 
@@ -343,9 +342,10 @@ impl WmState {
             }
             LayoutAction::ItemDestroyed { idx } => {
                 if let ItemIdx::Window(idx) = idx {
-                    let (window, _) = self.client_windows.remove(&idx).unwrap();
-                    unsafe {
-                        self.kill_window(window);
+                    if let Some((window, _)) = self.client_windows.remove(&idx) {
+                        unsafe {
+                            self.kill_window(window);
+                        }
                     }
                 }
                 let (frame, _) = self.frame_windows.remove(&idx).unwrap();
