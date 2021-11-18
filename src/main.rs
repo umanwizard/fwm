@@ -54,6 +54,7 @@ use x11::xlib::SubstructureRedirectMask;
 use x11::xlib::XCreateSimpleWindow;
 use x11::xlib::XCreateWindowEvent;
 use x11::xlib::XDefaultRootWindow;
+use x11::xlib::XDestroyWindowEvent;
 use x11::xlib::XEvent;
 use x11::xlib::XGetWindowAttributes;
 use x11::xlib::XGrabKey;
@@ -93,8 +94,8 @@ use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Debug;
 use std::iter::empty;
-use std::mem::MaybeUninit;
 use std::mem::size_of;
+use std::mem::MaybeUninit;
 use std::os::raw::c_char;
 use std::ptr::null;
 use std::ptr::null_mut;
@@ -140,8 +141,9 @@ impl Drop for ProtectedScm {
 }
 
 struct WmState {
-    pub window_to_item_idx: HashMap< x11::xlib::Window, usize>,
+    pub window_to_item_idx: HashMap<x11::xlib::Window, usize>,
     // The bounds exclude the frame.
+    // It's possible nothing exists, because slots in the layout don't have to correspond to windows.
     pub client_windows: HashMap<usize, (x11::xlib::Window, WindowBounds)>,
     // One of these should exist for every populated item - maintaned by Self::make_frame.
     // The bounds include the frame.
@@ -165,8 +167,14 @@ const BG_COLOR: u64 = 0xFF000000;
 fn frame_bounds_to_window_bounds(bounds: WindowBounds) -> WindowBounds {
     WindowBounds {
         content: AreaSize {
-            width: bounds.content.width.saturating_sub(BORDER_WIDTH as usize),
-            height: bounds.content.height.saturating_sub(BORDER_WIDTH as usize),
+            width: bounds
+                .content
+                .width
+                .saturating_sub(BORDER_WIDTH as usize * 2),
+            height: bounds
+                .content
+                .height
+                .saturating_sub(BORDER_WIDTH as usize * 2),
         },
         position: bounds.position,
     }
@@ -177,7 +185,10 @@ impl WmState {
         let bounds = self.layout.bounds(item);
         let window_bounds = frame_bounds_to_window_bounds(bounds);
         let (window_pos, mut window_content) = (window_bounds.position, window_bounds.content);
-        for bound in &mut [&mut window_content.width, &mut window_content.height,/* &mut window_bounds.position.x, &mut window_bounds.position.y*/] {
+        for bound in &mut [
+            &mut window_content.width,
+            &mut window_content.height, /* &mut window_bounds.position.x, &mut window_bounds.position.y*/
+        ] {
             if **bound == 0 {
                 **bound = 1;
             }
@@ -186,7 +197,6 @@ impl WmState {
         let frame = XCreateSimpleWindow(
             self.display,
             self.root,
-            
             window_pos.x.try_into().unwrap(),
             window_pos.y.try_into().unwrap(),
             window_content.width.try_into().unwrap(),
@@ -222,7 +232,10 @@ impl WmState {
 
     unsafe fn update_client_bounds(&mut self, window_idx: usize) {
         let (window, bounds) = self.client_windows[&window_idx];
-        println!("Resizing client window {} to content {:?}", window, bounds.content);
+        println!(
+            "Resizing client window {} to content {:?}",
+            window, bounds.content
+        );
         XResizeWindow(
             self.display,
             window,
@@ -253,6 +266,7 @@ impl WmState {
     }
 
     unsafe fn update_point(&mut self, old_point: ItemIdx, new_point: ItemIdx) {
+        eprintln!("Updating point: {:?} to {:?}", old_point, new_point);
         let (old_frame, _) = self.frame_windows[&old_point];
         let (new_frame, _) = self.frame_windows[&new_point];
         XSetWindowBorder(self.display, old_frame, BASIC_BORDER_COLOR);
@@ -261,7 +275,11 @@ impl WmState {
 }
 
 impl WmState {
-    pub fn new(display: *mut x11::xlib::Display, root: x11::xlib::Window, bounds: WindowBounds) -> Self {
+    pub fn new(
+        display: *mut x11::xlib::Display,
+        root: x11::xlib::Window,
+        bounds: WindowBounds,
+    ) -> Self {
         let mut ret = Self {
             window_to_item_idx: Default::default(),
             client_windows: Default::default(),
@@ -274,7 +292,9 @@ impl WmState {
             display,
             root,
         };
-        unsafe { ret.make_frame(ItemIdx::Container(0)); }
+        unsafe {
+            ret.make_frame(ItemIdx::Container(0));
+        }
         ret
     }
     pub fn do_and_recompute<I, F>(&mut self, closure: F)
@@ -312,9 +332,12 @@ impl WmState {
                 }
                 if let ItemIdx::Window(idx) = idx {
                     let window_bounds = frame_bounds_to_window_bounds(bounds);
-                    self.client_windows.get_mut(&idx).unwrap().1 = window_bounds;
-                    unsafe {
-                        self.update_client_bounds(idx);
+                    if let Some(cb) = self.client_windows.get_mut(&idx) {
+                        cb.1 = bounds;
+
+                        unsafe {
+                            self.update_client_bounds(idx);
+                        }
                     }
                 }
             }
@@ -335,7 +358,9 @@ impl WmState {
     }
     pub fn navigate(&mut self, direction: Direction) {
         self.do_and_recompute(|wm| {
-            wm.layout.navigate(wm.point, direction, None);
+            if let Some(point) = wm.layout.navigate(wm.point, direction, None) {
+                wm.point = point;
+            }
             None
         });
     }
@@ -409,7 +434,15 @@ impl KeyCombo {
         let mod5 = (state & Mod5Mask) != 0;
 
         Self {
-            key_sym,shift,lock,control,mod1,mod2,mod3,mod4,mod5
+            key_sym,
+            shift,
+            lock,
+            control,
+            mod1,
+            mod2,
+            mod3,
+            mod4,
+            mod5,
         }
     }
 }
@@ -540,10 +573,19 @@ unsafe extern "C" fn run_wm(bindings: SCM) -> SCM {
     let screen = XScreenOfDisplay(display, 0);
     let screen = std::ptr::read(screen);
     eprintln!("screen: {:?}", screen);
-    
-    let wm = WmState::new(display, root, WindowBounds { position: Default::default(), content: AreaSize { width: screen.width.try_into().unwrap(), height: screen.height.try_into().unwrap() }});
-    
-    
+
+    let wm = WmState::new(
+        display,
+        root,
+        WindowBounds {
+            position: Default::default(),
+            content: AreaSize {
+                width: screen.width.try_into().unwrap(),
+                height: screen.height.try_into().unwrap(),
+            },
+        },
+    );
+
     let wm_scm = make_foreign_object(wm, b"WmState\0", WM_STATE_TYPE);
 
     insert_bindings(wm_scm, bindings);
@@ -569,8 +611,6 @@ unsafe extern "C" fn run_wm(bindings: SCM) -> SCM {
                     wm.bindings[&combo].0 // XXX
                 };
                 scm_apply_1(proc, wm_scm, SCM_EOL);
-                
-                    
             }
             x11::xlib::CreateNotify => {
                 let XCreateWindowEvent { window, .. } = e.create_window;
@@ -582,7 +622,8 @@ unsafe extern "C" fn run_wm(bindings: SCM) -> SCM {
                             return vec![];
                         }
                         let w_idx = wm.layout.alloc_window();
-                        wm.client_windows.insert(w_idx, (window, Default::default()));
+                        wm.client_windows
+                            .insert(w_idx, (window, Default::default()));
                         wm.window_to_item_idx.insert(window, w_idx);
                         let container = wm.layout.nearest_container(wm.point);
                         let n_ctr_children = wm.layout.children(container).len();
@@ -591,7 +632,7 @@ unsafe extern "C" fn run_wm(bindings: SCM) -> SCM {
                             MoveCursor::Into {
                                 container,
                                 index: n_ctr_children,
-                            }
+                            },
                         );
                         wm.point = ItemIdx::Window(w_idx);
                         let frame = wm.make_frame(wm.point);
@@ -607,8 +648,19 @@ unsafe extern "C" fn run_wm(bindings: SCM) -> SCM {
                 let mut attrib: MaybeUninit<XWindowAttributes> = MaybeUninit::uninit();
                 XGetWindowAttributes(display, window, attrib.as_mut_ptr());
                 let attrib = attrib.assume_init();
-                eprintln!("Mapping window {} with w: {}, h: {}, x: {}, y: {}", window, attrib.width, attrib.height, attrib.x, attrib.y);
+                eprintln!(
+                    "Mapping window {} with w: {}, h: {}, x: {}, y: {}",
+                    window, attrib.width, attrib.height, attrib.x, attrib.y
+                );
                 XMapWindow(display, window);
+            }
+            x11::xlib::DestroyNotify => {
+                let XDestroyWindowEvent { window, .. } = e.destroy_window;
+                let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                if let Entry::Occupied(oe) = wm.window_to_item_idx.entry(window) {
+                    let idx = oe.remove();
+                    wm.client_windows.remove(&idx);
+                }
             }
             _ => {}
         }
@@ -672,7 +724,7 @@ unsafe extern "C" fn navigate(state: SCM, symbol: SCM) -> SCM {
     };
     eprintln!("dir is {:?}", dir);
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
-    wm.navigate_cursor(dir);
+    wm.navigate(dir);
     SCM_UNSPECIFIED
 }
 
@@ -682,7 +734,7 @@ unsafe extern "C" fn cursor(state: SCM, symbol: SCM) -> SCM {
         _ => todo!(),
     };
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
-    wm.navigate(dir);
+    wm.navigate_cursor(dir);
     SCM_UNSPECIFIED
 }
 
