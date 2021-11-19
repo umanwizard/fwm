@@ -1,1 +1,1 @@
-exec target/debug/fwm < init.guile
+exec target/debug/fwm < init.ss

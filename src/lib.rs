@@ -164,7 +164,7 @@ impl<'a> Iterator for DescendantsIter<'a> {
     }
 }
 impl Layout {
-    fn n_children(&self, item: ItemIdx) -> usize {
+    pub fn n_children(&self, item: ItemIdx) -> usize {
         match item {
             ItemIdx::Window(_) => 0,
             ItemIdx::Container(c_idx) => self.containers[c_idx].as_ref().unwrap().children.len(),

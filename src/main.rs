@@ -14,9 +14,11 @@ use rand::thread_rng;
 use rand::Rng;
 use rust_guile::scm_apply_1;
 use rust_guile::scm_assert_foreign_object_type;
+use rust_guile::scm_assq_ref;
 use rust_guile::scm_c_define_gsubr;
 use rust_guile::scm_eq_p;
 use rust_guile::scm_foreign_object_ref;
+use rust_guile::scm_from_uint64;
 use rust_guile::scm_from_utf8_stringn;
 use rust_guile::scm_from_utf8_symbol;
 use rust_guile::scm_gc_malloc;
@@ -29,9 +31,11 @@ use rust_guile::scm_make_foreign_object_type;
 use rust_guile::scm_primitive_eval;
 use rust_guile::scm_procedure_p;
 use rust_guile::scm_shell;
+use rust_guile::scm_to_uint64;
 use rust_guile::scm_to_utf8_string;
 use rust_guile::scm_to_utf8_stringn;
 use rust_guile::scm_with_guile;
+use rust_guile::scm_wrong_type_arg_msg;
 use rust_guile::size_t;
 use rust_guile::SCM;
 use x11::keysym::XK_4;
@@ -557,7 +561,9 @@ unsafe fn get_foreign_object<'a, T>(obj: SCM, r#type: SCM) -> &'a mut T {
         .expect("We should have set data in the constructor")
 }
 
-unsafe extern "C" fn run_wm(bindings: SCM) -> SCM {
+unsafe extern "C" fn run_wm(config: SCM) -> SCM {
+    let bindings = scm_assq_ref(config, scm_from_utf8_symbol(std::mem::transmute(b"bindings\0")));
+    let place_new_window = scm_assq_ref(config, scm_from_utf8_symbol(std::mem::transmute(b"place-new-window\0")));
     let display = XOpenDisplay(null());
     assert!(!display.is_null());
     let root = XDefaultRootWindow(display);
@@ -615,6 +621,8 @@ unsafe extern "C" fn run_wm(bindings: SCM) -> SCM {
             x11::xlib::CreateNotify => {
                 let XCreateWindowEvent { window, .. } = e.create_window;
                 {
+                    let insert_cursor = scm_apply_1(place_new_window, wm_scm, SCM_EOL);
+                    let insert_cursor = todo!();
                     let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
                     wm.do_and_recompute(|wm| {
                         if wm.frame_windows.values().any(|(w2, _)| *w2 == window) {
@@ -625,14 +633,9 @@ unsafe extern "C" fn run_wm(bindings: SCM) -> SCM {
                         wm.client_windows
                             .insert(w_idx, (window, Default::default()));
                         wm.window_to_item_idx.insert(window, w_idx);
-                        let container = wm.layout.nearest_container(wm.point);
-                        let n_ctr_children = wm.layout.children(container).len();
                         let actions = wm.layout.r#move(
                             ItemIdx::Window(w_idx),
-                            MoveCursor::Into {
-                                container,
-                                index: n_ctr_children,
-                            },
+                            insert_cursor,
                         );
                         wm.point = ItemIdx::Window(w_idx);
                         let frame = wm.make_frame(wm.point);
@@ -738,6 +741,133 @@ unsafe extern "C" fn cursor(state: SCM, symbol: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
+#[repr(C)]
+struct ScmCell {
+    car: SCM,
+    cdr: SCM,
+}
+
+unsafe fn scm_cons(car: SCM, cdr: SCM) -> SCM {
+    let cell = scm_gc_malloc(size_of::<ScmCell>() as u64, null()) as *mut ScmCell;
+    std::ptr::write(cell, ScmCell {
+        car,
+        cdr,
+    });
+    cell as SCM
+}
+
+unsafe fn item_idx_to_scm(idx: ItemIdx) -> SCM {
+    let (sym, inner) = match idx {
+        ItemIdx::Window(inner) => (scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"window\0").unwrap().as_ptr()), inner),
+        ItemIdx::Container(inner) => (scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"container\0").unwrap().as_ptr()), inner),
+    };
+    let cdr = scm_from_uint64(inner as u64);
+    scm_cons(sym, cdr)
+}
+
+unsafe fn item_idx_from_scm(scm: SCM) -> ItemIdx {
+    let car = scm_car(scm);
+    let cdr = scm_cdr(scm);
+
+    if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"window\0"))) {
+        ItemIdx::Window(scm_to_uint64(cdr).try_into().unwrap())
+    } else if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"container\0"))) {
+        ItemIdx::Container(scm_to_uint64(cdr).try_into().unwrap())
+    } else {
+        panic!("XXX")
+    }
+}
+
+unsafe fn scm_car(scm: SCM) -> SCM {
+    if !scm_is_pair(scm) {
+        scm_wrong_type_arg_msg(std::mem::transmute(b"car\0"), 0, scm, std::mem::transmute(b"pair\0"));
+    }
+    scm_car_unchecked(scm)
+}
+
+unsafe fn scm_cdr(scm: SCM) -> SCM {
+    if !scm_is_pair(scm) {
+        scm_wrong_type_arg_msg(std::mem::transmute(b"cdr\0"), 0, scm, std::mem::transmute(b"pair\0"));
+    }
+    scm_cdr_unchecked(scm)
+}
+
+unsafe extern "C" fn get_point(state: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    item_idx_to_scm(wm.point)
+}
+
+unsafe fn scm_from_bool(x: bool) -> SCM {
+    if x {
+        SCM_BOOL_T
+    } else {
+        SCM_BOOL_F
+    }
+}
+
+unsafe extern "C" fn is_occupied(state: SCM, point: SCM) -> SCM {
+    let point = item_idx_from_scm(point);
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    scm_from_bool(match point {
+        ItemIdx::Container(_) => true, // Containers always count as occupied, since their frame is their entire content.
+        ItemIdx::Window(w_idx) => wm.client_windows.contains_key(&w_idx)
+    })
+}
+
+
+unsafe extern "C" fn nearest_container(state: SCM, point: SCM) -> SCM {
+    let point = item_idx_from_scm(point);
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let ctr = wm.layout.nearest_container(point);
+    scm_from_uint64(ctr as u64)
+}
+
+unsafe extern "C" fn n_children(state: SCM, ctr: SCM) -> SCM {
+    let ctr = scm_to_uint64(ctr).try_into().unwrap();
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let n = wm.layout.n_children(ItemIdx::Container(ctr));
+    scm_from_uint64(n as u64)
+}
+
+unsafe fn cursor_to_scm(cursor: MoveCursor) -> SCM {
+    let (car, cdr) = match cursor {
+        MoveCursor::Split { item, direction } => {
+            let car = scm_from_utf8_symbol(std::mem::transmute(b"split\0"));
+            let scm_item = item_idx_to_scm(item);
+            let scm_direction = scm_from_utf8_symbol(match direction {
+                Direction::Up => std::mem::transmute(b"up\0"),
+                Direction::Down => std::mem::transmute(b"down\0"),
+                Direction::Left => std::mem::transmute(b"left\0"),
+                Direction::Right => std::mem::transmute(b"right\0"),
+            });
+            let cdr = scm_cons(scm_item, scm_direction);
+            (car, cdr)
+        },
+        MoveCursor::Into { container, index } => {
+            let car = scm_from_utf8_symbol(std::mem::transmute(b"into\0"));
+            let cdr = scm_cons(scm_from_uint64(container as u64), scm_from_uint64(index as u64));
+            (car, cdr)
+        },
+    };
+    scm_cons(car, cdr)
+}
+
+unsafe extern "C" fn make_cursor_into(container: SCM, index: SCM) -> SCM {
+    let container = scm_to_uint64(container).try_into().unwrap();
+    let index = scm_to_uint64(index).try_into().unwrap();
+    let cursor = MoveCursor::Into { container, index };
+    cursor_to_scm(cursor)
+}
+
+unsafe extern "C" fn make_cursor_before(state: SCM, point: SCM) -> SCM {
+    let point = item_idx_from_scm(point);
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+
+    let cursor = wm.layout.cursor_before(point);
+    
+    cursor_to_scm(cursor)
+}
+
 unsafe fn scm_is_pair(scm: SCM) -> bool {
     let raw = scm as usize;
     // See "Representation of scheme objects" in scm.h
@@ -753,6 +883,8 @@ unsafe fn scm_cdr_unchecked(scm: SCM) -> SCM {
 }
 
 const SCM_BOOL_F: SCM = 0x4 as SCM;
+const SCM_BOOL_T: SCM = 0x404 as SCM;
+    
 
 fn scm_is_true(scm: SCM) -> bool {
     !(scm == SCM_BOOL_F)
@@ -830,6 +962,19 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, navigate as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-cursor\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, cursor as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-get-point\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, get_point as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-occupied?\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, is_occupied as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-nearest-container\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, nearest_container as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-n-children\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, n_children as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-make-cursor-into\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, make_cursor_into as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-make-cursor-before\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, make_cursor_before as *mut c_void);
+    
     std::ptr::null_mut()
 }
 
