@@ -665,6 +665,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 let (old_frame, frame_bounds) = wm.frame_windows.remove(&ItemIdx::Window(w_idx)).unwrap();
                                 let window_bounds = frame_bounds_to_window_bounds(frame_bounds);
                                 let maybe_old_window = wm.client_windows.insert(w_idx, (window, window_bounds)).map(|(mow, _)| mow);
+                                wm.window_to_item_idx.insert(window, w_idx);
                                 wm.point = ItemIdx::Window(w_idx);
                                 let frame = wm.make_frame(wm.point);
                                 eprintln!("Reparenting {} into {}", window, frame);
