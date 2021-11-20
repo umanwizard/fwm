@@ -9,7 +9,12 @@ use ::fwm::MoveCursor;
 use ::fwm::Position;
 use ::fwm::WindowBounds;
 
+use fwm::scheme::Deserializer;
+use fwm::scheme::Serializer;
+use fwm::scheme::scm_car_unchecked;
+use fwm::scheme::scm_cdr_unchecked;
 use fwm::scheme::scm_cons;
+use fwm::scheme::scm_is_pair;
 use fwm::scheme::scm_is_true;
 use fwm::scheme::SCM_EOL;
 use fwm::scheme::SCM_UNSPECIFIED;
@@ -42,6 +47,8 @@ use rust_guile::scm_with_guile;
 use rust_guile::scm_wrong_type_arg_msg;
 use rust_guile::size_t;
 use rust_guile::SCM;
+use serde::Deserialize;
+use serde::Serialize;
 use x11::keysym::XK_4;
 use x11::keysym::XK_F4;
 use x11::xlib::ControlMask;
@@ -632,7 +639,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 let XCreateWindowEvent { window, .. } = e.create_window;
                 {
                     let insert_cursor = scm_apply_1(place_new_window, wm_scm, SCM_EOL);
-                    let insert_cursor = cursor_from_scm(insert_cursor);
+                    let insert_cursor = MoveCursor::deserialize(Deserializer { scm: insert_cursor }).expect("XXX");
                     let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
                     wm.do_and_recompute(|wm| {
                         if wm.frame_windows.values().any(|(w2, _)| *w2 == window) {
@@ -748,36 +755,36 @@ unsafe extern "C" fn cursor(state: SCM, symbol: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
-unsafe fn item_idx_to_scm(idx: ItemIdx) -> SCM {
-    let (sym, inner) = match idx {
-        ItemIdx::Window(inner) => (
-            scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"window\0").unwrap().as_ptr()),
-            inner,
-        ),
-        ItemIdx::Container(inner) => (
-            scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"container\0").unwrap().as_ptr()),
-            inner,
-        ),
-    };
-    let cdr = scm_from_uint64(inner as u64);
-    scm_cons(sym, cdr)
-}
+// unsafe fn item_idx_to_scm(idx: ItemIdx) -> SCM {
+//     let (sym, inner) = match idx {
+//         ItemIdx::Window(inner) => (
+//             scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"window\0").unwrap().as_ptr()),
+//             inner,
+//         ),
+//         ItemIdx::Container(inner) => (
+//             scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"container\0").unwrap().as_ptr()),
+//             inner,
+//         ),
+//     };
+//     let cdr = scm_from_uint64(inner as u64);
+//     scm_cons(sym, cdr)
+// }
 
-unsafe fn item_idx_from_scm(scm: SCM) -> ItemIdx {
-    let car = scm_car(scm);
-    let cdr = scm_cdr(scm);
+// unsafe fn item_idx_from_scm(scm: SCM) -> ItemIdx {
+//     let car = scm_car(scm);
+//     let cdr = scm_cdr(scm);
 
-    if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"window\0"))) {
-        ItemIdx::Window(scm_to_uint64(cdr).try_into().unwrap())
-    } else if scm_is_eq(
-        car,
-        scm_from_utf8_symbol(std::mem::transmute(b"container\0")),
-    ) {
-        ItemIdx::Container(scm_to_uint64(cdr).try_into().unwrap())
-    } else {
-        panic!("XXX")
-    }
-}
+//     if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"window\0"))) {
+//         ItemIdx::Window(scm_to_uint64(cdr).try_into().unwrap())
+//     } else if scm_is_eq(
+//         car,
+//         scm_from_utf8_symbol(std::mem::transmute(b"container\0")),
+//     ) {
+//         ItemIdx::Container(scm_to_uint64(cdr).try_into().unwrap())
+//     } else {
+//         panic!("XXX")
+//     }
+// }
 
 unsafe fn scm_car(scm: SCM) -> SCM {
     if !scm_is_pair(scm) {
@@ -805,7 +812,7 @@ unsafe fn scm_cdr(scm: SCM) -> SCM {
 
 unsafe extern "C" fn get_point(state: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
-    item_idx_to_scm(wm.point)
+    wm.point.serialize(Serializer::default()).expect("XXX")
 }
 
 unsafe fn scm_from_bool(x: bool) -> SCM {
@@ -817,7 +824,7 @@ unsafe fn scm_from_bool(x: bool) -> SCM {
 }
 
 unsafe extern "C" fn is_occupied(state: SCM, point: SCM) -> SCM {
-    let point = item_idx_from_scm(point);
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     scm_from_bool(match point {
         ItemIdx::Container(_) => true, // Containers always count as occupied, since their frame is their entire content.
@@ -826,7 +833,7 @@ unsafe extern "C" fn is_occupied(state: SCM, point: SCM) -> SCM {
 }
 
 unsafe extern "C" fn nearest_container(state: SCM, point: SCM) -> SCM {
-    let point = item_idx_from_scm(point);
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let ctr = wm.layout.nearest_container(point);
     scm_from_uint64(ctr as u64)
@@ -839,73 +846,72 @@ unsafe extern "C" fn n_children(state: SCM, ctr: SCM) -> SCM {
     scm_from_uint64(n as u64)
 }
 
-unsafe fn cursor_to_scm(cursor: MoveCursor) -> SCM {
-    let (car, cdr) = match cursor {
-        MoveCursor::Split { item, direction } => {
-            let car = scm_from_utf8_symbol(std::mem::transmute(b"split\0"));
-            let scm_item = item_idx_to_scm(item);
-            let scm_direction = scm_from_utf8_symbol(match direction {
-                Direction::Up => std::mem::transmute(b"up\0"),
-                Direction::Down => std::mem::transmute(b"down\0"),
-                Direction::Left => std::mem::transmute(b"left\0"),
-                Direction::Right => std::mem::transmute(b"right\0"),
-            });
-            let cdr = scm_cons(scm_item, scm_direction);
-            (car, cdr)
-        }
-        MoveCursor::Into { container, index } => {
-            let car = scm_from_utf8_symbol(std::mem::transmute(b"into\0"));
-            let cdr = scm_cons(
-                scm_from_uint64(container as u64),
-                scm_from_uint64(index as u64),
-            );
-            (car, cdr)
-        }
-    };
-    scm_cons(car, cdr)
-}
+// unsafe fn cursor_to_scm(cursor: MoveCursor) -> SCM {
+//     let (car, cdr) = match cursor {
+//         MoveCursor::Split { item, direction } => {
+//             let car = scm_from_utf8_symbol(std::mem::transmute(b"split\0"));
+//             let scm_item = item_idx_to_scm(item);
+//             let scm_direction = scm_from_utf8_symbol(match direction {
+//                 Direction::Up => std::mem::transmute(b"up\0"),
+//                 Direction::Down => std::mem::transmute(b"down\0"),
+//                 Direction::Left => std::mem::transmute(b"left\0"),
+//                 Direction::Right => std::mem::transmute(b"right\0"),
+//             });
+//             let cdr = scm_cons(scm_item, scm_direction);
+//             (car, cdr)
+//         }
+//         MoveCursor::Into { container, index } => {
+//             let car = scm_from_utf8_symbol(std::mem::transmute(b"into\0"));
+//             let cdr = scm_cons(
+//                 scm_from_uint64(container as u64),
+//                 scm_from_uint64(index as u64),
+//             );
+//             (car, cdr)
+//         }
+//     };
+//     scm_cons(car, cdr)
+// }
 
-unsafe fn cursor_from_scm(scm: SCM) -> MoveCursor {
-    let (car, cdr) = (scm_car(scm), scm_cdr(scm));
-    if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"split\0"))) {
-        let (car, cdr) = (scm_car(cdr), scm_cdr(cdr));
-        let item = item_idx_from_scm(car);
-        let direction = if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"up\0"))) {
-            Direction::Up
-        } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"down\0"))) {
-            Direction::Down
-        } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"left\0"))) {
-            Direction::Left
-        } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"right\0"))) {
-            Direction::Right
-        } else {
-            panic!("XXX")
-        };
-        MoveCursor::Split { item, direction }
-    } else if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"into\0"))) {
-        let (car, cdr) = (scm_car(cdr), scm_cdr(cdr));
-        let container = scm_to_uint64(car).try_into().unwrap();
-        let index = scm_to_uint64(cdr).try_into().unwrap();
-        MoveCursor::Into { container, index }
-    } else {
-        panic!("XXX")
-    }
-}
+// unsafe fn cursor_from_scm(scm: SCM) -> MoveCursor {
+//     let (car, cdr) = (scm_car(scm), scm_cdr(scm));
+//     if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"split\0"))) {
+//         let (car, cdr) = (scm_car(cdr), scm_cdr(cdr));
+//         let item = item_idx_from_scm(car);
+//         let direction = if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"up\0"))) {
+//             Direction::Up
+//         } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"down\0"))) {
+//             Direction::Down
+//         } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"left\0"))) {
+//             Direction::Left
+//         } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"right\0"))) {
+//             Direction::Right
+//         } else {
+//             panic!("XXX")
+//         };
+//         MoveCursor::Split { item, direction }
+//     } else if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"into\0"))) {
+//         let (car, cdr) = (scm_car(cdr), scm_cdr(cdr));
+//         let container = scm_to_uint64(car).try_into().unwrap();
+//         let index = scm_to_uint64(cdr).try_into().unwrap();
+//         MoveCursor::Into { container, index }
+//     } else {
+//         panic!("XXX")
+//     }
+// }
 
 unsafe extern "C" fn make_cursor_into(container: SCM, index: SCM) -> SCM {
     let container = scm_to_uint64(container).try_into().unwrap();
     let index = scm_to_uint64(index).try_into().unwrap();
     let cursor = MoveCursor::Into { container, index };
-    cursor_to_scm(cursor)
+    cursor.serialize(Serializer::default()).expect("XXX")
 }
 
 unsafe extern "C" fn make_cursor_before(state: SCM, point: SCM) -> SCM {
-    let point = item_idx_from_scm(point);
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
 
     let cursor = wm.layout.cursor_before(point);
-
-    cursor_to_scm(cursor)
+    cursor.serialize(Serializer::default()).expect("XXX")
 }
 
 const SCM_BOOL_F: SCM = 0x4 as SCM;

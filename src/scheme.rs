@@ -14,10 +14,7 @@ use rust_guile::{
     scm_to_double, scm_to_int64, scm_to_int8, scm_to_uint32, scm_to_uint64, scm_to_utf32_stringn,
     scm_to_utf8_stringn, SCM,
 };
-use serde::{
-    de,
-    ser::{self, SerializeStruct, SerializeStructVariant, SerializeTuple},
-};
+use serde::{de, ser::{self, SerializeStruct, SerializeStructVariant, SerializeTuple}};
 
 #[derive(Debug)]
 pub enum Error {
@@ -32,6 +29,8 @@ pub enum Error {
     ExpectedNil,
     ExpectedSymbol { sym: Option<String> },
     ExpectedAlist,
+    ExpectedSomething,
+    NotSelfDescribing,
 }
 
 impl std::fmt::Display for Error {
@@ -605,15 +604,15 @@ pub fn try_scm_to_bytes(scm: SCM) -> Option<Vec<u8>> {
     }
 }
 
-unsafe fn scm_car_unchecked(scm: SCM) -> SCM {
+pub unsafe fn scm_car_unchecked(scm: SCM) -> SCM {
     std::ptr::read(scm as *const SCM)
 }
 
-unsafe fn scm_cdr_unchecked(scm: SCM) -> SCM {
+pub unsafe fn scm_cdr_unchecked(scm: SCM) -> SCM {
     std::ptr::read((scm as *const SCM).add(1))
 }
 
-fn scm_is_pair(scm: SCM) -> bool {
+pub fn scm_is_pair(scm: SCM) -> bool {
     unsafe {
         let raw = scm as usize;
         // See "Representation of scheme objects" in scm.h
@@ -682,6 +681,75 @@ struct AlistStructAccess {
     scm: SCM,
 }
 
+struct VariantAccess {
+    scm: Option<SCM>,
+}
+
+impl<'de> de::VariantAccess<'de> for VariantAccess {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        if self.scm.is_none() {
+            Ok(())
+        } else {
+            Err(Error::ExpectedSymbol { sym: None })
+        }
+    }
+
+    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: de::DeserializeSeed<'de> {
+        let scm = self.scm.ok_or(Error::ExpectedSomething)?;
+        seed.deserialize(Deserializer { scm })
+    }
+
+    fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de> {
+        use de::Deserializer as _;
+        let scm = self.scm.ok_or(Error::ExpectedSomething)?;
+        Deserializer { scm }.deserialize_tuple(len, visitor)
+    }
+
+    fn struct_variant<V>(
+        self,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de> {
+        use de::Deserializer as _;
+        let scm = self.scm.ok_or(Error::ExpectedSomething)?;
+        Deserializer { scm }.deserialize_struct("", fields, visitor)
+    }
+}
+
+struct EnumAccess
+{
+    scm: SCM,
+}
+
+impl<'de> de::EnumAccess<'de> for EnumAccess {
+    type Error = Error;
+
+    type Variant = VariantAccess;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    where
+        V: de::DeserializeSeed<'de> {
+        let (variant, rest) = match try_scm_decons(self.scm) {
+            Some((car, cdr)) => {
+                (car, Some(cdr))
+            },
+            None => {
+                (self.scm, None)
+            }
+        };
+        let variant = seed.deserialize(Deserializer { scm: variant })?;
+        Ok((variant, VariantAccess { scm: rest }))
+    }
+}
+
 impl<'de> de::SeqAccess<'de> for AlistStructAccess {
     type Error = Error;
 
@@ -723,7 +791,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        Err(Error::NotSelfDescribing)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -979,20 +1047,23 @@ impl<'de> de::Deserializer<'de> for Deserializer {
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        visitor.visit_enum(EnumAccess { scm: self.scm })
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        let sym = try_scm_to_sym(self.scm).ok_or_else(|| Error::ExpectedSymbol {
+            sym: None,
+        })?;
+        visitor.visit_string(sym)
     }
 
     fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_any(visitor)
     }
 }
