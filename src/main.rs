@@ -622,7 +622,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 let XCreateWindowEvent { window, .. } = e.create_window;
                 {
                     let insert_cursor = scm_apply_1(place_new_window, wm_scm, SCM_EOL);
-                    let insert_cursor = todo!();
+                    let insert_cursor = cursor_from_scm(insert_cursor);
                     let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
                     wm.do_and_recompute(|wm| {
                         if wm.frame_windows.values().any(|(w2, _)| *w2 == window) {
@@ -850,6 +850,33 @@ unsafe fn cursor_to_scm(cursor: MoveCursor) -> SCM {
         },
     };
     scm_cons(car, cdr)
+}
+
+unsafe fn cursor_from_scm(scm: SCM) -> MoveCursor {
+    let (car, cdr) = (scm_car(scm), scm_cdr(scm));
+    if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"split\0"))) {
+        let (car, cdr) = (scm_car(cdr), scm_cdr(cdr));
+        let item = item_idx_from_scm(car);
+        let direction = if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"up\0"))) {
+            Direction::Up
+        } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"down\0"))) {
+            Direction::Down
+        } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"left\0"))) {
+            Direction::Left
+        } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"right\0"))) {
+            Direction::Right
+        } else {
+            panic!("XXX")
+        };
+        MoveCursor::Split { item, direction }
+    } else if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"into\0"))) {
+        let (car, cdr) = (scm_car(cdr), scm_cdr(cdr));
+        let container = scm_to_uint64(car).try_into().unwrap();
+        let index = scm_to_uint64(cdr).try_into().unwrap();
+        MoveCursor::Into { container, index }
+    } else {
+        panic!("XXX")
+    }
 }
 
 unsafe extern "C" fn make_cursor_into(container: SCM, index: SCM) -> SCM {
