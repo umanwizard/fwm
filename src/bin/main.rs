@@ -69,6 +69,7 @@ use x11::xlib::SubstructureRedirectMask;
 use x11::xlib::XCreateSimpleWindow;
 use x11::xlib::XCreateWindowEvent;
 use x11::xlib::XDefaultRootWindow;
+use x11::xlib::XDestroyWindow;
 use x11::xlib::XDestroyWindowEvent;
 use x11::xlib::XEvent;
 use x11::xlib::XGetWindowAttributes;
@@ -639,24 +640,41 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 let XCreateWindowEvent { window, .. } = e.create_window;
                 {
                     let insert_cursor = scm_apply_1(place_new_window, wm_scm, SCM_EOL);
-                    let insert_cursor = MoveCursor::deserialize(Deserializer { scm: insert_cursor }).expect("XXX");
+                    let insert_cursor = MoveOrReplace::deserialize(Deserializer { scm: insert_cursor }).expect("XXX");
                     let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
                     wm.do_and_recompute(|wm| {
                         if wm.frame_windows.values().any(|(w2, _)| *w2 == window) {
                             // Don't create a frame for an already framed window
                             return vec![];
                         }
-                        let w_idx = wm.layout.alloc_window();
-                        wm.client_windows
-                            .insert(w_idx, (window, Default::default()));
-                        wm.window_to_item_idx.insert(window, w_idx);
-                        let actions = wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
-                        wm.point = ItemIdx::Window(w_idx);
-                        let frame = wm.make_frame(wm.point);
-                        eprintln!("Reparenting {} into {}", window, frame);
-                        XReparentWindow(wm.display, window, frame, 0, 0);
-                        XRaiseWindow(wm.display, window);
-                        actions
+                        match insert_cursor {
+                            MoveOrReplace::Move(insert_cursor) => {
+                                let w_idx = wm.layout.alloc_window();
+                                wm.client_windows
+                                    .insert(w_idx, (window, Default::default()));
+                                wm.window_to_item_idx.insert(window, w_idx);
+                                let actions = wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
+                                wm.point = ItemIdx::Window(w_idx);
+                                let frame = wm.make_frame(wm.point);
+                                eprintln!("Reparenting {} into {}", window, frame);
+                                XReparentWindow(wm.display, window, frame, 0, 0);
+                                XRaiseWindow(wm.display, window);
+                                actions
+                            }
+                            MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
+                                let (old_frame, frame_bounds) = wm.frame_windows.remove(&ItemIdx::Window(w_idx)).unwrap();
+                                let window_bounds = frame_bounds_to_window_bounds(frame_bounds);
+                                let maybe_old_window = wm.client_windows.insert(w_idx, (window, window_bounds)).map(|(mow, _)| mow);
+                                wm.point = ItemIdx::Window(w_idx);
+                                let frame = wm.make_frame(wm.point);
+                                eprintln!("Reparenting {} into {}", window, frame);
+                                XReparentWindow(wm.display, window, frame, 0, 0);
+                                XRaiseWindow(wm.display, window);
+                                XDestroyWindow(wm.display, old_frame);
+                                vec![LayoutAction::NewBounds { idx: wm.point, bounds: window_bounds }]
+                            }
+                            MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!()
+                        }
                     })
                 }
             }
@@ -685,57 +703,19 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 enum SpatialDir {
     Planar(Direction),
     Parent,
     Child,
 }
 
-unsafe fn dir_from_symbol(symbol: SCM) -> Option<SpatialDir> {
-    use Direction::*;
-    use SpatialDir::*;
-    let dir = if scm_is_eq(
-        symbol,
-        scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"left\0").unwrap().as_ptr()),
-    ) {
-        Planar(Left)
-    } else if scm_is_eq(
-        symbol,
-        scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"up\0").unwrap().as_ptr()),
-    ) {
-        Planar(Up)
-    } else if scm_is_eq(
-        symbol,
-        scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"right\0").unwrap().as_ptr()),
-    ) {
-        Planar(Right)
-    } else if scm_is_eq(
-        symbol,
-        scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"down\0").unwrap().as_ptr()),
-    ) {
-        Planar(Down)
-    } else if scm_is_eq(
-        symbol,
-        scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"parent\0").unwrap().as_ptr()),
-    ) {
-        Parent
-    } else if scm_is_eq(
-        symbol,
-        scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"child\0").unwrap().as_ptr()),
-    ) {
-        Child
-    } else {
-        return None;
-    };
-    Some(dir)
-}
-
 fn scm_is_eq(x: SCM, y: SCM) -> bool {
     x == y
 }
 
-unsafe extern "C" fn navigate(state: SCM, symbol: SCM) -> SCM {
-    let dir = match dir_from_symbol(symbol).expect("XXX") {
+unsafe extern "C" fn navigate(state: SCM, dir: SCM) -> SCM {
+    let dir = match SpatialDir::deserialize(Deserializer { scm: dir }).expect("XXX") {
         SpatialDir::Planar(dir) => dir,
         _ => todo!(),
     };
@@ -745,8 +725,8 @@ unsafe extern "C" fn navigate(state: SCM, symbol: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
-unsafe extern "C" fn cursor(state: SCM, symbol: SCM) -> SCM {
-    let dir = match dir_from_symbol(symbol).expect("XXX") {
+unsafe extern "C" fn cursor(state: SCM, dir: SCM) -> SCM {
+    let dir = match SpatialDir::deserialize(Deserializer { scm: dir }).expect("XXX") {
         SpatialDir::Planar(dir) => dir,
         _ => todo!(),
     };
@@ -899,10 +879,16 @@ unsafe extern "C" fn n_children(state: SCM, ctr: SCM) -> SCM {
 //     }
 // }
 
+#[derive(Deserialize, Serialize)]
+enum MoveOrReplace {
+    Move(MoveCursor),
+    Replace(ItemIdx),
+}
+
 unsafe extern "C" fn make_cursor_into(container: SCM, index: SCM) -> SCM {
     let container = scm_to_uint64(container).try_into().unwrap();
     let index = scm_to_uint64(index).try_into().unwrap();
-    let cursor = MoveCursor::Into { container, index };
+    let cursor = MoveOrReplace::Move(MoveCursor::Into { container, index });
     cursor.serialize(Serializer::default()).expect("XXX")
 }
 
@@ -910,7 +896,7 @@ unsafe extern "C" fn make_cursor_before(state: SCM, point: SCM) -> SCM {
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
 
-    let cursor = wm.layout.cursor_before(point);
+    let cursor = MoveOrReplace::Move(wm.layout.cursor_before(point));
     cursor.serialize(Serializer::default()).expect("XXX")
 }
 

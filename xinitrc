@@ -1,1 +1,1 @@
-exec target/debug/fwm < init.ss
+exec target/debug/main < init.ss
