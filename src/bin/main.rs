@@ -9,10 +9,10 @@ use ::fwm::MoveCursor;
 use ::fwm::Position;
 use ::fwm::WindowBounds;
 
-use fwm::scheme::SCM_EOL;
-use fwm::scheme::SCM_UNSPECIFIED;
 use fwm::scheme::scm_cons;
 use fwm::scheme::scm_is_true;
+use fwm::scheme::SCM_EOL;
+use fwm::scheme::SCM_UNSPECIFIED;
 use rand::distributions::{Distribution, Standard};
 use rand::thread_rng;
 use rand::Rng;
@@ -748,7 +748,6 @@ unsafe extern "C" fn cursor(state: SCM, symbol: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
-
 unsafe fn item_idx_to_scm(idx: ItemIdx) -> SCM {
     let (sym, inner) = match idx {
         ItemIdx::Window(inner) => (
@@ -909,10 +908,8 @@ unsafe extern "C" fn make_cursor_before(state: SCM, point: SCM) -> SCM {
     cursor_to_scm(cursor)
 }
 
-
 const SCM_BOOL_F: SCM = 0x4 as SCM;
 const SCM_BOOL_T: SCM = 0x404 as SCM;
-
 
 unsafe extern "C" fn insert_bindings(state: SCM, mut bindings: SCM) -> SCM {
     let state = get_foreign_object::<WmState>(state, WM_STATE_TYPE);

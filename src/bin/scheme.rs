@@ -1,18 +1,18 @@
-use std::{ffi::{CStr, c_void}, ptr::null_mut};
+use std::{
+    ffi::{c_void, CStr},
+    ptr::null_mut,
+};
 
-use fwm::scheme::{Deserializer, SCM_UNSPECIFIED, Serializer};
-use rust_guile::{SCM, scm_c_define_gsubr, scm_shell, scm_with_guile};
-use serde::Serialize;
+use fwm::scheme::{Deserializer, Serializer, SCM_UNSPECIFIED};
+use rust_guile::{scm_c_define_gsubr, scm_shell, scm_with_guile, SCM};
 use serde::Deserialize;
+use serde::Serialize;
 
 #[derive(Serialize, Deserialize, Debug)]
 enum Inner {
     InnerUnit,
     InnerTuple(u64, u64),
-    InnerStruct {
-        foo: String,
-        bar: u64
-    }
+    InnerStruct { foo: String, bar: u64 },
 }
 #[derive(Serialize, Deserialize, Debug)]
 struct MyStruct {
