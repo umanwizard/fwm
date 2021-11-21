@@ -43,24 +43,20 @@ pub enum ItemIdx {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub enum ItemAndData<W, C>
-{
+pub enum ItemAndData<W, C> {
     Window(usize, W),
     Container(usize, C),
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
-pub struct Window<W>
-where
-{
+pub struct Window<W> {
     pub bounds: WindowBounds,
     pub parent: Option<usize>,
     pub data: W,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Container<C>
-{
+pub struct Container<C> {
     strategy: LayoutStrategy,
     children: Vec<(f64, ItemIdx)>,
     parent: Option<usize>, // None for root
@@ -84,57 +80,58 @@ pub enum LayoutDataMut<'a, W, C> {
     Container(&'a mut C),
 }
 
-impl<W, C> LayoutData< W, C> {
+impl<W, C> LayoutData<W, C> {
     pub fn unwrap_window(self) -> W {
         match self {
             Self::Window(data) => data,
-            _ => panic!("Unwrapped wrong variant")
+            _ => panic!("Unwrapped wrong variant"),
         }
     }
 
     pub fn unwrap_container(self) -> C {
         match self {
             Self::Container(data) => data,
-            _ => panic!("Unwrapped wrong variant")
+            _ => panic!("Unwrapped wrong variant"),
         }
-    }    
+    }
 }
 
 impl<'a, W, C> LayoutDataRef<'a, W, C> {
     pub fn unwrap_window(self) -> &'a W {
         match self {
             Self::Window(data) => data,
-            _ => panic!("Unwrapped wrong variant")
+            _ => panic!("Unwrapped wrong variant"),
         }
     }
 
     pub fn unwrap_container(self) -> &'a C {
         match self {
             Self::Container(data) => data,
-            _ => panic!("Unwrapped wrong variant")
+            _ => panic!("Unwrapped wrong variant"),
         }
-    }    
+    }
 }
 
-impl<'a, W, C> LayoutDataMut<'a,  W, C> {
+impl<'a, W, C> LayoutDataMut<'a, W, C> {
     pub fn unwrap_window(self) -> &'a mut W {
         match self {
             Self::Window(data) => data,
-            _ => panic!("Unwrapped wrong variant")
+            _ => panic!("Unwrapped wrong variant"),
         }
     }
 
     pub fn unwrap_container(self) -> &'a mut C {
         match self {
             Self::Container(data) => data,
-            _ => panic!("Unwrapped wrong variant")
+            _ => panic!("Unwrapped wrong variant"),
         }
-    }    
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layout<W, C>
-where C: Default
+where
+    C: Default,
 {
     windows: Vec<Option<Window<W>>>,
     containers: Vec<Option<Container<C>>>, // 0 is the root
@@ -1056,8 +1053,7 @@ where
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
-pub enum LayoutAction<W, C>
-{
+pub enum LayoutAction<W, C> {
     /// An item has moved or been created.
     NewBounds { idx: ItemIdx, bounds: WindowBounds },
     /// An item has been destroyed.

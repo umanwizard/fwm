@@ -314,8 +314,8 @@ impl WmState {
         display: *mut x11::xlib::Display,
         root: x11::xlib::Window,
         bounds: WindowBounds,
-        // uhh... 
-        frames_created: &'a mut HashSet<x11::xlib::Window>
+        // uhh...
+        frames_created: &'a mut HashSet<x11::xlib::Window>,
     ) -> Self {
         let mut ret = Self {
             client_window_to_item_idx: Default::default(),
@@ -664,7 +664,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
 
     // These should not themselves be framed.
     let mut frames_created = HashSet::new();
-    
+
     let wm = WmState::new(
         display,
         root,
@@ -682,7 +682,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
 
     insert_bindings(wm_scm, bindings);
     println!("Hello, world!");
-
 
     // XGrabServer(display);
     // ... rehome windows ...
@@ -749,7 +748,11 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 wm.client_window_to_item_idx.insert(window, w_idx);
                                 wm.point = ItemIdx::Window(w_idx);
                                 wm.set_frame(wm.point, 0);
-                                wm.layout.try_data_mut(wm.point).unwrap().unwrap_window().client = Some(window);
+                                wm.layout
+                                    .try_data_mut(wm.point)
+                                    .unwrap()
+                                    .unwrap_window()
+                                    .client = Some(window);
                                 let frame = wm.make_frame(wm.point);
                                 frames_created.insert(frame);
                                 eprintln!("Reparenting {} into {}", window, frame);
@@ -784,7 +787,11 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 if let Entry::Occupied(oe) = wm.client_window_to_item_idx.entry(window) {
                     let idx = oe.remove();
                     if wm.layout.exists(ItemIdx::Window(idx)) {
-                        wm.layout.try_data_mut(ItemIdx::Window(idx)).unwrap().unwrap_window().client = None;
+                        wm.layout
+                            .try_data_mut(ItemIdx::Window(idx))
+                            .unwrap()
+                            .unwrap_window()
+                            .client = None;
                     }
                 }
                 // TODO - call a scheme function to see whether the user wants to kill the
