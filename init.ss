@@ -2,8 +2,7 @@
   (lambda (f)
     (lambda (wm)
       (f wm (fwm-get-point wm)))))
-		   
-		  
+
 (define bindings
   (let ([mod "mod1"])
     (list

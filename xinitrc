@@ -1,1 +1,1 @@
-exec target/debug/main < init.ss
+exec cargo run --bin main --release < init.ss
