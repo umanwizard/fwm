@@ -783,6 +783,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
                 if let Entry::Occupied(oe) = wm.client_window_to_item_idx.entry(window) {
                     let idx = oe.remove();
+                    if wm.layout.exists(ItemIdx::Window(idx)) {
+                        wm.layout.try_data_mut(ItemIdx::Window(idx)).unwrap().unwrap_window().client = None;
+                    }
                 }
                 // TODO - call a scheme function to see whether the user wants to kill the
                 // layout slot too
