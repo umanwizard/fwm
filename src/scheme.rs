@@ -14,7 +14,10 @@ use rust_guile::{
     scm_to_double, scm_to_int64, scm_to_int8, scm_to_uint32, scm_to_uint64, scm_to_utf32_stringn,
     scm_to_utf8_stringn, SCM,
 };
-use serde::{de, ser::{self, SerializeStruct, SerializeStructVariant, SerializeTuple}};
+use serde::{
+    de,
+    ser::{self, SerializeStruct, SerializeStructVariant, SerializeTuple},
+};
 
 #[derive(Debug)]
 pub enum Error {
@@ -698,14 +701,16 @@ impl<'de> de::VariantAccess<'de> for VariantAccess {
 
     fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
     where
-        T: de::DeserializeSeed<'de> {
+        T: de::DeserializeSeed<'de>,
+    {
         let scm = self.scm.ok_or(Error::ExpectedSomething)?;
         seed.deserialize(Deserializer { scm })
     }
 
     fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
-        V: de::Visitor<'de> {
+        V: de::Visitor<'de>,
+    {
         use de::Deserializer as _;
         let scm = self.scm.ok_or(Error::ExpectedSomething)?;
         Deserializer { scm }.deserialize_tuple(len, visitor)
@@ -717,15 +722,15 @@ impl<'de> de::VariantAccess<'de> for VariantAccess {
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
-        V: de::Visitor<'de> {
+        V: de::Visitor<'de>,
+    {
         use de::Deserializer as _;
         let scm = self.scm.ok_or(Error::ExpectedSomething)?;
         Deserializer { scm }.deserialize_struct("", fields, visitor)
     }
 }
 
-struct EnumAccess
-{
+struct EnumAccess {
     scm: SCM,
 }
 
@@ -736,14 +741,11 @@ impl<'de> de::EnumAccess<'de> for EnumAccess {
 
     fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
     where
-        V: de::DeserializeSeed<'de> {
+        V: de::DeserializeSeed<'de>,
+    {
         let (variant, rest) = match try_scm_decons(self.scm) {
-            Some((car, cdr)) => {
-                (car, Some(cdr))
-            },
-            None => {
-                (self.scm, None)
-            }
+            Some((car, cdr)) => (car, Some(cdr)),
+            None => (self.scm, None),
         };
         let variant = seed.deserialize(Deserializer { scm: variant })?;
         Ok((variant, VariantAccess { scm: rest }))
@@ -1054,9 +1056,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
     where
         V: de::Visitor<'de>,
     {
-        let sym = try_scm_to_sym(self.scm).ok_or_else(|| Error::ExpectedSymbol {
-            sym: None,
-        })?;
+        let sym = try_scm_to_sym(self.scm).ok_or_else(|| Error::ExpectedSymbol { sym: None })?;
         visitor.visit_string(sym)
     }
 

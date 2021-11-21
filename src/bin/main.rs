@@ -9,13 +9,13 @@ use ::fwm::MoveCursor;
 use ::fwm::Position;
 use ::fwm::WindowBounds;
 
-use fwm::scheme::Deserializer;
-use fwm::scheme::Serializer;
 use fwm::scheme::scm_car_unchecked;
 use fwm::scheme::scm_cdr_unchecked;
 use fwm::scheme::scm_cons;
 use fwm::scheme::scm_is_pair;
 use fwm::scheme::scm_is_true;
+use fwm::scheme::Deserializer;
+use fwm::scheme::Serializer;
 use fwm::scheme::SCM_EOL;
 use fwm::scheme::SCM_UNSPECIFIED;
 use rand::distributions::{Distribution, Standard};
@@ -657,7 +657,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 let XCreateWindowEvent { window, .. } = e.create_window;
                 {
                     let insert_cursor = scm_apply_1(place_new_window, wm_scm, SCM_EOL);
-                    let insert_cursor = MoveOrReplace::deserialize(Deserializer { scm: insert_cursor }).expect("XXX");
+                    let insert_cursor =
+                        MoveOrReplace::deserialize(Deserializer { scm: insert_cursor })
+                            .expect("XXX");
                     let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
                     wm.do_and_recompute(|wm| {
                         if wm.frame_windows.values().any(|(w2, _)| *w2 == window) {
@@ -670,7 +672,8 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 wm.client_windows
                                     .insert(w_idx, (window, Default::default()));
                                 wm.window_to_item_idx.insert(window, w_idx);
-                                let actions = wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
+                                let actions =
+                                    wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
                                 wm.point = ItemIdx::Window(w_idx);
                                 let frame = wm.make_frame(wm.point);
                                 eprintln!("Reparenting {} into {}", window, frame);
@@ -679,9 +682,13 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 actions
                             }
                             MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
-                                let (old_frame, frame_bounds) = wm.frame_windows.remove(&ItemIdx::Window(w_idx)).unwrap();
+                                let (old_frame, frame_bounds) =
+                                    wm.frame_windows.remove(&ItemIdx::Window(w_idx)).unwrap();
                                 let window_bounds = frame_bounds_to_window_bounds(frame_bounds);
-                                let maybe_old_window = wm.client_windows.insert(w_idx, (window, window_bounds)).map(|(mow, _)| mow);
+                                let maybe_old_window = wm
+                                    .client_windows
+                                    .insert(w_idx, (window, window_bounds))
+                                    .map(|(mow, _)| mow);
                                 wm.window_to_item_idx.insert(window, w_idx);
                                 wm.point = ItemIdx::Window(w_idx);
                                 let frame = wm.make_frame(wm.point);
@@ -689,9 +696,12 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 XReparentWindow(wm.display, window, frame, 0, 0);
                                 XRaiseWindow(wm.display, window);
                                 XDestroyWindow(wm.display, old_frame);
-                                vec![LayoutAction::NewBounds { idx: wm.point, bounds: window_bounds }]
+                                vec![LayoutAction::NewBounds {
+                                    idx: wm.point,
+                                    bounds: window_bounds,
+                                }]
                             }
-                            MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!()
+                            MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!(),
                         }
                     })
                 }
@@ -940,7 +950,7 @@ unsafe extern "C" fn kill_client_at(state: SCM, point: SCM) -> SCM {
     wm.do_and_recompute(|wm| {
         let w_idx = match point {
             ItemIdx::Window(w_idx) => w_idx,
-            _ => panic!("XXX")
+            _ => panic!("XXX"),
         };
         if let Some((window, _)) = wm.client_windows.remove(&w_idx) {
             wm.kill_window(window);

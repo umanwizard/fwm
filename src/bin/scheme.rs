@@ -31,7 +31,10 @@ extern "C" fn get_serialized() -> SCM {
         bar: ("hello".to_string(), "world".to_string()),
         quux: b"Brennan\0".to_vec(),
         xyzzy: Some(69),
-        derp: Inner::InnerStruct { foo: "Brennan\0 was here!".to_string(), bar: 420 },
+        derp: Inner::InnerStruct {
+            foo: "Brennan\0 was here!".to_string(),
+            bar: 420,
+        },
         syzygy: b"was here\0".to_vec(),
     };
     let s = Serializer::default();

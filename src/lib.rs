@@ -898,8 +898,16 @@ impl Layout {
 
     pub fn exists(&self, idx: ItemIdx) -> bool {
         match idx {
-            ItemIdx::Container(c_idx) => self.containers.get(c_idx).and_then(|maybe_ctr| maybe_ctr.as_ref()).is_some(),
-            ItemIdx::Window(w_idx) => self.windows.get(w_idx).and_then(|maybe_w| maybe_w.as_ref()).is_some()
+            ItemIdx::Container(c_idx) => self
+                .containers
+                .get(c_idx)
+                .and_then(|maybe_ctr| maybe_ctr.as_ref())
+                .is_some(),
+            ItemIdx::Window(w_idx) => self
+                .windows
+                .get(w_idx)
+                .and_then(|maybe_w| maybe_w.as_ref())
+                .is_some(),
         }
     }
 }
