@@ -71,6 +71,7 @@ use x11::xlib::XCreateWindowEvent;
 use x11::xlib::XDefaultRootWindow;
 use x11::xlib::XDestroyWindow;
 use x11::xlib::XDestroyWindowEvent;
+use x11::xlib::XErrorEvent;
 use x11::xlib::XEvent;
 use x11::xlib::XGetWindowAttributes;
 use x11::xlib::XGrabKey;
@@ -94,6 +95,8 @@ use x11::xlib::XResizeWindow;
 use x11::xlib::XScreenCount;
 use x11::xlib::XScreenOfDisplay;
 use x11::xlib::XSelectInput;
+use x11::xlib::XSetErrorHandler;
+use x11::xlib::XSetIOErrorHandler;
 use x11::xlib::XSetWindowAttributes;
 use x11::xlib::XSetWindowBorder;
 use x11::xlib::XStringToKeysym;
@@ -243,7 +246,7 @@ impl WmState {
         // to communicate with the layout about _attempting_ to kill windows.
         // For now we just nuke it.
 
-        XKillClient(self.display, window);
+        XDestroyWindow(self.display, window);
     }
 
     unsafe fn update_client_bounds(&mut self, window_idx: usize) {
@@ -283,9 +286,10 @@ impl WmState {
 
     unsafe fn update_point(&mut self, old_point: ItemIdx, new_point: ItemIdx) {
         eprintln!("Updating point: {:?} to {:?}", old_point, new_point);
-        let (old_frame, _) = self.frame_windows[&old_point];
+        if let Some((old_frame, _)) = self.frame_windows.get(&old_point) {
+            XSetWindowBorder(self.display, *old_frame, BASIC_BORDER_COLOR);
+        }
         let (new_frame, _) = self.frame_windows[&new_point];
-        XSetWindowBorder(self.display, old_frame, BASIC_BORDER_COLOR);
         XSetWindowBorder(self.display, new_frame, POINT_BORDER_COLOR);
     }
 }
@@ -573,6 +577,17 @@ unsafe fn get_foreign_object<'a, T>(obj: SCM, r#type: SCM) -> &'a mut T {
         .expect("We should have set data in the constructor")
 }
 
+unsafe extern "C" fn x_err(display: *mut Display, ev: *mut XErrorEvent) -> i32 {
+    eprintln!("X error: {:?}", *ev);
+    0
+}
+
+unsafe extern "C" fn x_io_err(display: *mut Display) -> i32 {
+    let e = std::io::Error::last_os_error();
+    eprintln!("X io error (last: {:?})", e);
+    0
+}
+
 unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     let bindings = scm_assq_ref(
         config,
@@ -584,6 +599,8 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     );
     let display = XOpenDisplay(null());
     assert!(!display.is_null());
+    XSetErrorHandler(Some(x_err));
+    XSetIOErrorHandler(Some(x_io_err));
     let root = XDefaultRootWindow(display);
     XSelectInput(
         display,
@@ -901,6 +918,21 @@ unsafe extern "C" fn make_cursor_before(state: SCM, point: SCM) -> SCM {
     cursor.serialize(Serializer::default()).expect("XXX")
 }
 
+unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    wm.do_and_recompute(|wm| {
+        let next_from_wm_point = wm.layout.topological_next(wm.point).unwrap_or_else(||wm.layout.topological_last());
+        let actions = wm.layout.destroy(point);
+        if !wm.layout.exists(wm.point) {
+            wm.point = next_from_wm_point;
+        }
+        actions
+    });
+    eprintln!("Finished do and recompute in kill_item_at");
+    SCM_UNSPECIFIED
+}
+
 const SCM_BOOL_F: SCM = 0x4 as SCM;
 const SCM_BOOL_T: SCM = 0x404 as SCM;
 
@@ -988,6 +1020,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, make_cursor_into as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-make-cursor-before\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, make_cursor_before as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-kill-item-at\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, kill_item_at as *mut c_void);
 
     std::ptr::null_mut()
 }
