@@ -748,6 +748,8 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
 
                                 wm.client_window_to_item_idx.insert(window, w_idx);
                                 wm.point = ItemIdx::Window(w_idx);
+                                wm.set_frame(wm.point, 0);
+                                wm.layout.try_data_mut(wm.point).unwrap().unwrap_window().client = Some(window);
                                 let frame = wm.make_frame(wm.point);
                                 frames_created.insert(frame);
                                 eprintln!("Reparenting {} into {}", window, frame);

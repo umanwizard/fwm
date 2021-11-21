@@ -646,6 +646,7 @@ where
     }
     pub fn destroy(&mut self, item: ItemIdx) -> Vec<LayoutAction<W, C>> {
         let to_destroy = self.iter_descendants(item).collect::<Vec<_>>();
+        let parent = self.parent_container(item);
         // Remove items from the layout, and take their data for passing back up
         let mut result = to_destroy
             .iter()
@@ -662,7 +663,6 @@ where
                 LayoutAction::ItemDestroyed { item }
             })
             .collect::<Vec<_>>();
-        let parent = self.parent_container(item);
         match parent {
             None => {
                 // we destroyed the root, but there must always be a root.

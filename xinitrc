@@ -1,1 +1,1 @@
-exec cargo run --bin main --release < init.ss
+exec cargo run --bin main < init.ss
