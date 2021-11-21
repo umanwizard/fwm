@@ -1,7 +1,9 @@
-(define fwm-kill-item-at-point (lambda (wm)
-				 (display "about to run kill-item") (newline)
-				 (fwm-kill-item-at wm (fwm-get-point wm))
-				 (display "made it back to scheme!") (newline)))
+(define at-point
+  (lambda (f)
+    (lambda (wm)
+      (f wm (fwm-get-point wm)))))
+		   
+		  
 (define bindings
   (let ([mod "mod1"])
     (list
@@ -9,7 +11,8 @@
      (cons (fwm-parse-key-combo (string-append mod "+j")) (lambda (x) (fwm-navigate x '(Planar . Down))))
      (cons (fwm-parse-key-combo (string-append mod "+k")) (lambda (x) (fwm-navigate x '(Planar . Up))))
      (cons (fwm-parse-key-combo (string-append mod "+l")) (lambda (x) (fwm-navigate x '(Planar . Right))))
-     (cons (fwm-parse-key-combo (string-append mod "+shift+apostrophe")) fwm-kill-item-at-point)
+     (cons (fwm-parse-key-combo (string-append mod "+shift+apostrophe")) (at-point fwm-kill-item-at))
+     (cons (fwm-parse-key-combo (string-append mod "+apostrophe")) (at-point fwm-kill-client-at))
      (cons (fwm-parse-key-combo (string-append mod "+shift+h")) (lambda (x) (fwm-cursor x '(Planar . Left))))
      (cons (fwm-parse-key-combo (string-append mod "+shift+j")) (lambda (x) (fwm-cursor x '(Planar . Down))))
      (cons (fwm-parse-key-combo (string-append mod "+shift+k")) (lambda (x) (fwm-cursor x '(Planar . Up))))

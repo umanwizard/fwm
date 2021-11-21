@@ -922,14 +922,31 @@ unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     wm.do_and_recompute(|wm| {
-        let next_from_wm_point = wm.layout.topological_next(wm.point).unwrap_or_else(||wm.layout.topological_last());
+        // let next_from_wm_point = wm.layout.topological_next(wm.point).unwrap_or_else(||wm.layout.topological_last());
+        let topo_next = wm.layout.topological_next(wm.point);
         let actions = wm.layout.destroy(point);
         if !wm.layout.exists(wm.point) {
-            wm.point = next_from_wm_point;
+            wm.point = topo_next.unwrap_or_else(|| wm.layout.topological_last());
         }
         actions
     });
     eprintln!("Finished do and recompute in kill_item_at");
+    SCM_UNSPECIFIED
+}
+
+unsafe extern "C" fn kill_client_at(state: SCM, point: SCM) -> SCM {
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    wm.do_and_recompute(|wm| {
+        let w_idx = match point {
+            ItemIdx::Window(w_idx) => w_idx,
+            _ => panic!("XXX")
+        };
+        if let Some((window, _)) = wm.client_windows.remove(&w_idx) {
+            wm.kill_window(window);
+        }
+        None
+    });
     SCM_UNSPECIFIED
 }
 
@@ -1022,6 +1039,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, make_cursor_before as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-kill-item-at\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, kill_item_at as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-kill-client-at\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, kill_client_at as *mut c_void);
 
     std::ptr::null_mut()
 }
