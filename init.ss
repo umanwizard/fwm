@@ -37,6 +37,7 @@
 					;        (cons (fwm-parse-key-combo (string-append mod "+g")) fwm-move)
 					;        (cons (fwm-parse-key-combo (string-append mod "+G")) fwm-cursor-to-point)
      (cons (fwm-parse-key-combo (string-append mod "+Return")) (lambda (x) (system "urxvt&")))
+     (cons (fwm-parse-key-combo (string-append mod "+e")) (lambda (x) (system "rofi -show run&")))
      )
     )
   )
