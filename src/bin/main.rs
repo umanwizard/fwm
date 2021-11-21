@@ -352,7 +352,7 @@ impl WmState {
                 }
                 if let ItemIdx::Window(idx) = idx {
                     if let Some(cb) = self.client_windows.get_mut(&idx) {
-                        cb.1 = bounds;
+                        cb.1 = frame_bounds_to_window_bounds(bounds);
 
                         unsafe {
                             self.update_client_bounds(idx);
