@@ -42,25 +42,102 @@ pub enum ItemIdx {
     Container(usize),
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ItemAndData<W, C>
+{
+    Window(usize, W),
+    Container(usize, C),
+}
+
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
-pub struct Window {
+pub struct Window<W>
+where
+{
     pub bounds: WindowBounds,
     pub parent: Option<usize>,
+    pub data: W,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Container {
+pub struct Container<C>
+{
     strategy: LayoutStrategy,
     children: Vec<(f64, ItemIdx)>,
     parent: Option<usize>, // None for root
     bounds: WindowBounds,
     inter: usize,
+    data: C,
+}
+
+pub enum LayoutData<W, C> {
+    Window(W),
+    Container(C),
+}
+
+pub enum LayoutDataRef<'a, W, C> {
+    Window(&'a W),
+    Container(&'a C),
+}
+
+pub enum LayoutDataMut<'a, W, C> {
+    Window(&'a mut W),
+    Container(&'a mut C),
+}
+
+impl<W, C> LayoutData< W, C> {
+    pub fn unwrap_window(self) -> W {
+        match self {
+            Self::Window(data) => data,
+            _ => panic!("Unwrapped wrong variant")
+        }
+    }
+
+    pub fn unwrap_container(self) -> C {
+        match self {
+            Self::Container(data) => data,
+            _ => panic!("Unwrapped wrong variant")
+        }
+    }    
+}
+
+impl<'a, W, C> LayoutDataRef<'a, W, C> {
+    pub fn unwrap_window(self) -> &'a W {
+        match self {
+            Self::Window(data) => data,
+            _ => panic!("Unwrapped wrong variant")
+        }
+    }
+
+    pub fn unwrap_container(self) -> &'a C {
+        match self {
+            Self::Container(data) => data,
+            _ => panic!("Unwrapped wrong variant")
+        }
+    }    
+}
+
+impl<'a, W, C> LayoutDataMut<'a,  W, C> {
+    pub fn unwrap_window(self) -> &'a mut W {
+        match self {
+            Self::Window(data) => data,
+            _ => panic!("Unwrapped wrong variant")
+        }
+    }
+
+    pub fn unwrap_container(self) -> &'a mut C {
+        match self {
+            Self::Container(data) => data,
+            _ => panic!("Unwrapped wrong variant")
+        }
+    }    
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Layout {
-    windows: Vec<Option<Window>>,
-    containers: Vec<Option<Container>>, // 0 is the root
+pub struct Layout<W, C>
+where C: Default
+{
+    windows: Vec<Option<Window<W>>>,
+    containers: Vec<Option<Container<C>>>, // 0 is the root
     root_bounds: WindowBounds,
 }
 
@@ -87,14 +164,22 @@ impl MoveCursor {
     }
 }
 
-struct DescendantsIter<'a> {
-    layout: &'a Layout,
+struct DescendantsIter<'a, W, C>
+where
+    W: Serialize + for<'d> Deserialize<'d>,
+    C: Serialize + for<'d> Deserialize<'d> + Default,
+{
+    layout: &'a Layout<W, C>,
     next: Option<ItemIdx>,
     orig: ItemIdx,
 }
 
-impl<'a> DescendantsIter<'a> {
-    pub fn new(layout: &'a Layout, item: ItemIdx) -> Self {
+impl<'a, W, C> DescendantsIter<'a, W, C>
+where
+    W: Serialize + for<'d> Deserialize<'d>,
+    C: Serialize + for<'d> Deserialize<'d> + Default,
+{
+    pub fn new(layout: &'a Layout<W, C>, item: ItemIdx) -> Self {
         Self {
             layout,
             next: Some(item),
@@ -126,7 +211,11 @@ where
     }
 }
 
-impl<'a> Iterator for DescendantsIter<'a> {
+impl<'a, W, C> Iterator for DescendantsIter<'a, W, C>
+where
+    W: Serialize + for<'d> Deserialize<'d>,
+    C: Serialize + for<'d> Deserialize<'d> + Default,
+{
     type Item = ItemIdx;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -165,14 +254,53 @@ impl<'a> Iterator for DescendantsIter<'a> {
         })
     }
 }
-impl Layout {
+impl<W, C> Layout<W, C>
+where
+    W: Serialize + for<'d> Deserialize<'d>,
+    C: Serialize + for<'d> Deserialize<'d> + Default,
+{
+    fn try_window(&self, w_idx: usize) -> Option<&Window<W>> {
+        self.windows.get(w_idx).and_then(|mw| mw.as_ref())
+    }
+    fn try_window_mut(&mut self, w_idx: usize) -> Option<&mut Window<W>> {
+        self.windows.get_mut(w_idx).and_then(|mw| mw.as_mut())
+    }
+    fn try_container(&self, c_idx: usize) -> Option<&Container<C>> {
+        self.containers.get(c_idx).and_then(|mc| mc.as_ref())
+    }
+    fn try_container_mut(&mut self, c_idx: usize) -> Option<&mut Container<C>> {
+        self.containers.get_mut(c_idx).and_then(|mc| mc.as_mut())
+    }
+
+    pub fn try_data(&self, item: ItemIdx) -> Option<LayoutDataRef<'_, W, C>> {
+        match item {
+            ItemIdx::Window(w_idx) => self
+                .try_window(w_idx)
+                .map(|w| LayoutDataRef::Window(&w.data)),
+            ItemIdx::Container(c_idx) => self
+                .try_container(c_idx)
+                .map(|c| LayoutDataRef::Container(&c.data)),
+        }
+    }
+
+    pub fn try_data_mut(&mut self, item: ItemIdx) -> Option<LayoutDataMut<'_, W, C>> {
+        match item {
+            ItemIdx::Window(w_idx) => self
+                .try_window_mut(w_idx)
+                .map(|w| LayoutDataMut::Window(&mut w.data)),
+            ItemIdx::Container(c_idx) => self
+                .try_container_mut(c_idx)
+                .map(|c| LayoutDataMut::Container(&mut c.data)),
+        }
+    }
+
     pub fn n_children(&self, item: ItemIdx) -> usize {
         match item {
             ItemIdx::Window(_) => 0,
             ItemIdx::Container(c_idx) => self.containers[c_idx].as_ref().unwrap().children.len(),
         }
     }
-    fn iter_descendants(&self, item: ItemIdx) -> DescendantsIter<'_> {
+    fn iter_descendants(&self, item: ItemIdx) -> DescendantsIter<'_, W, C> {
         DescendantsIter::new(self, item)
     }
     /// Put a container where `split` was, and put `inserted` and `split` into that container, their order controlled by `inserted_first`.
@@ -212,6 +340,7 @@ impl Layout {
                     parent: Some(parent),
                     bounds,
                     inter: 0, // TODO - this should be configurable.
+                    data: Default::default(),
                 });
                 let ctr = self.containers[parent].as_mut().unwrap();
                 ctr.children[index_in_parent].1 = ItemIdx::Container(next_c_idx);
@@ -244,6 +373,7 @@ impl Layout {
                             bounds,
                             inter,
                             parent: _,
+                            data: _,
                         } = self.containers[0].take().unwrap();
                         let new_ctr = Container {
                             strategy,
@@ -251,6 +381,7 @@ impl Layout {
                             bounds: Default::default(),
                             inter,
                             parent: Some(0),
+                            data: Default::default(),
                         };
                         self.containers[next_c_idx] = Some(new_ctr);
                         self.containers[0] = Some(Container {
@@ -263,6 +394,7 @@ impl Layout {
                             parent: None,
                             bounds,
                             inter: 0,
+                            data: Default::default(),
                         });
                         0
                     }
@@ -270,7 +402,7 @@ impl Layout {
             }
         }
     }
-    fn layout(&mut self, item: ItemIdx, out: &mut Vec<LayoutAction>) {
+    fn layout(&mut self, item: ItemIdx, out: &mut Vec<LayoutAction<W, C>>) {
         let c_idx = match item {
             ItemIdx::Container(idx) => idx,
             ItemIdx::Window(_) => return,
@@ -416,7 +548,11 @@ pub struct ChildLocation {
     pub index: usize,
 }
 
-impl Layout {
+impl<W, C> Layout<W, C>
+where
+    W: Serialize + for<'d> Deserialize<'d>,
+    C: Serialize + for<'d> Deserialize<'d> + Default,
+{
     pub fn cursor_before(&self, point: ItemIdx) -> MoveCursor {
         match self.parent_container(point) {
             Some(parent) => {
@@ -452,13 +588,14 @@ impl Layout {
             inter: 0,
             parent: None,
             strategy: LayoutStrategy::Horizontal,
+            data: Default::default(),
         }));
         this
     }
-    pub fn windows<'a>(&'a self) -> impl Iterator<Item = &'a Window> {
+    pub fn windows<'a>(&'a self) -> impl Iterator<Item = &'a Window<W>> {
         self.windows.iter().filter_map(Option::as_ref)
     }
-    pub fn resize(&mut self, bounds: WindowBounds) -> Vec<LayoutAction> {
+    pub fn resize(&mut self, bounds: WindowBounds) -> Vec<LayoutAction<W, C>> {
         println!("Resizing in wb: {:?}", bounds);
         self.containers[0].as_mut().unwrap().bounds = bounds;
         self.root_bounds = bounds;
@@ -468,7 +605,7 @@ impl Layout {
     }
     pub fn parent_container(&self, item: ItemIdx) -> Option<usize> {
         match item {
-            ItemIdx::Window(idx) => Some(self.windows[idx].unwrap().parent?),
+            ItemIdx::Window(idx) => Some(self.windows[idx].as_ref().unwrap().parent?),
             ItemIdx::Container(idx) => self.containers[idx].as_ref().unwrap().parent,
         }
     }
@@ -490,7 +627,6 @@ impl Layout {
         })
     }
     pub fn topological_next(&self, item: ItemIdx) -> Option<ItemIdx> {
-        println!("{}", serde_json::to_string_pretty(self).unwrap());
         self.topo_next_recursive(item)
     }
     pub fn topological_last(&self) -> ItemIdx {
@@ -508,20 +644,25 @@ impl Layout {
             }
         }
     }
-    pub fn destroy(&mut self, item: ItemIdx) -> Vec<LayoutAction> {
+    pub fn destroy(&mut self, item: ItemIdx) -> Vec<LayoutAction<W, C>> {
         let to_destroy = self.iter_descendants(item).collect::<Vec<_>>();
+        // Remove items from the layout, and take their data for passing back up
         let mut result = to_destroy
             .iter()
             .copied()
-            .map(|descendant| LayoutAction::ItemDestroyed { idx: descendant })
+            .map(|descendant| {
+                let item = match descendant {
+                    ItemIdx::Container(c_idx) => {
+                        ItemAndData::Container(c_idx, self.containers[c_idx].take().unwrap().data)
+                    }
+                    ItemIdx::Window(w_idx) => {
+                        ItemAndData::Window(w_idx, self.windows[w_idx].take().unwrap().data)
+                    }
+                };
+                LayoutAction::ItemDestroyed { item }
+            })
             .collect::<Vec<_>>();
         let parent = self.parent_container(item);
-        for item in to_destroy.iter().copied() {
-            match item {
-                ItemIdx::Window(idx) => self.windows[idx] = None,
-                ItemIdx::Container(idx) => self.containers[idx] = None,
-            }
-        }
         match parent {
             None => {
                 // we destroyed the root, but there must always be a root.
@@ -531,6 +672,7 @@ impl Layout {
                     parent: None,
                     inter: Default::default(),
                     bounds: self.root_bounds,
+                    data: Default::default(),
                 });
             }
             Some(mut parent) => {
@@ -584,7 +726,7 @@ impl Layout {
         }
         false
     }
-    pub fn alloc_window(&mut self) -> usize {
+    pub fn alloc_window(&mut self, data: W) -> usize {
         let next_idx = self
             .windows
             .iter()
@@ -596,10 +738,11 @@ impl Layout {
         self.windows[next_idx] = Some(Window {
             bounds: Default::default(),
             parent: None,
+            data,
         });
         next_idx
     }
-    pub fn r#move(&mut self, from: ItemIdx, to: MoveCursor) -> Vec<LayoutAction> {
+    pub fn r#move(&mut self, from: ItemIdx, to: MoveCursor) -> Vec<LayoutAction<W, C>> {
         if self.is_ancestor(from, to.item()) {
             panic!()
         }
@@ -736,8 +879,8 @@ impl Layout {
                     .unwrap();
             }
         }
-        let move_horizontal = (dir == Direction::Left || dir == Direction::Right);
-        let move_to_first = (dir == Direction::Right || dir == Direction::Down);
+        let move_horizontal = dir == Direction::Left || dir == Direction::Right;
+        let move_to_first = dir == Direction::Right || dir == Direction::Down;
         eprintln!("Ancestor is {:?}", ancestor);
         if may_descend
             || !matches!(
@@ -912,12 +1055,13 @@ impl Layout {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
-pub enum LayoutAction {
+#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
+pub enum LayoutAction<W, C>
+{
     /// An item has moved or been created.
     NewBounds { idx: ItemIdx, bounds: WindowBounds },
     /// An item has been destroyed.
-    ItemDestroyed { idx: ItemIdx },
+    ItemDestroyed { item: ItemAndData<W, C> },
     /// A window still exists, but is no longer visible.
     ItemHidden { idx: ItemIdx },
 }

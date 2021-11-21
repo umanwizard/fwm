@@ -8,6 +8,8 @@ use ::fwm::LayoutAction;
 use ::fwm::MoveCursor;
 use ::fwm::Position;
 use ::fwm::WindowBounds;
+use fwm::ItemAndData;
+use fwm::LayoutDataMut;
 
 use fwm::scheme::scm_car_unchecked;
 use fwm::scheme::scm_cdr_unchecked;
@@ -107,6 +109,7 @@ use x11::xlib::XWindowAttributes;
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::convert::TryInto;
 use std::ffi::c_void;
 use std::ffi::CStr;
@@ -159,16 +162,24 @@ impl Drop for ProtectedScm {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct WindowData {
+    // This is optional, to allow holes in the layout
+    client: Option<x11::xlib::Window>,
+    frame: x11::xlib::Window,
+    inner_size: AreaSize,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug)]
+struct ContainerData {
+    frame: x11::xlib::Window,
+    inner_size: AreaSize,
+}
+
 struct WmState {
-    pub window_to_item_idx: HashMap<x11::xlib::Window, usize>,
-    // The bounds exclude the frame.
-    // It's possible nothing exists, because slots in the layout don't have to correspond to windows.
-    pub client_windows: HashMap<usize, (x11::xlib::Window, WindowBounds)>,
-    // One of these should exist for every populated item - maintaned by Self::make_frame.
-    // The bounds include the frame.
-    pub frame_windows: HashMap<ItemIdx, (x11::xlib::Window, WindowBounds)>,
+    pub client_window_to_item_idx: HashMap<x11::xlib::Window, usize>,
     pub bindings: HashMap<KeyCombo, ProtectedScm>,
-    pub layout: Layout,
+    pub layout: Layout<WindowData, ContainerData>,
     pub point: ItemIdx,
     pub cursor: Option<MoveCursor>,
 
@@ -183,31 +194,18 @@ const BASIC_BORDER_COLOR: u64 = 0x000000FF;
 const POINT_BORDER_COLOR: u64 = 0x0000FF00;
 const BG_COLOR: u64 = 0xFF000000;
 
-fn frame_bounds_to_window_bounds(bounds: WindowBounds) -> WindowBounds {
-    WindowBounds {
-        content: AreaSize {
-            width: bounds
-                .content
-                .width
-                .saturating_sub(BORDER_WIDTH as usize * 2),
-            height: bounds
-                .content
-                .height
-                .saturating_sub(BORDER_WIDTH as usize * 2),
-        },
-        position: bounds.position,
+fn outer_to_inner_size(outer: AreaSize) -> AreaSize {
+    AreaSize {
+        width: outer.width.saturating_sub(BORDER_WIDTH as usize * 2),
+        height: outer.height.saturating_sub(BORDER_WIDTH as usize * 2),
     }
 }
 
 impl WmState {
     unsafe fn make_frame(&mut self, item: ItemIdx) -> x11::xlib::Window {
         let bounds = self.layout.bounds(item);
-        let window_bounds = frame_bounds_to_window_bounds(bounds);
-        let (window_pos, mut window_content) = (window_bounds.position, window_bounds.content);
-        for bound in &mut [
-            &mut window_content.width,
-            &mut window_content.height, /* &mut window_bounds.position.x, &mut window_bounds.position.y*/
-        ] {
+        let mut inner_size = outer_to_inner_size(bounds.content);
+        for bound in &mut [&mut inner_size.width, &mut inner_size.height] {
             if **bound == 0 {
                 **bound = 1;
             }
@@ -216,10 +214,10 @@ impl WmState {
         let frame = XCreateSimpleWindow(
             self.display,
             self.root,
-            window_pos.x.try_into().unwrap(),
-            window_pos.y.try_into().unwrap(),
-            window_content.width.try_into().unwrap(),
-            window_content.height.try_into().unwrap(),
+            bounds.position.x.try_into().unwrap(),
+            bounds.position.y.try_into().unwrap(),
+            inner_size.width.try_into().unwrap(),
+            inner_size.height.try_into().unwrap(),
             BORDER_WIDTH,
             BASIC_BORDER_COLOR,
             BG_COLOR,
@@ -232,11 +230,13 @@ impl WmState {
 
         XMapWindow(self.display, frame);
 
-        let old = self.frame_windows.insert(item, (frame, bounds));
+        let old = self.get_frame(item);
         assert!(
-            old.is_none(),
+            old == 0,
             "Attempted to create frame for the same element twice"
         );
+        self.set_frame(item, frame);
+        self.set_inner_size(item, inner_size);
 
         frame
     }
@@ -250,29 +250,43 @@ impl WmState {
     }
 
     unsafe fn update_client_bounds(&mut self, window_idx: usize) {
-        let (window, bounds) = self.client_windows[&window_idx];
+        let WindowData {
+            client,
+            frame,
+            inner_size,
+        } = self
+            .layout
+            .try_data(ItemIdx::Window(window_idx))
+            .expect("Client should exist here")
+            .unwrap_window();
+        let client = client.expect("Client should exist here");
         println!(
-            "Resizing client window {} to content {:?}",
-            window, bounds.content
+            "Resizing client window {} to inner size {:?}",
+            client, inner_size
         );
         XResizeWindow(
             self.display,
-            window,
-            bounds.content.width.try_into().unwrap(),
-            bounds.content.height.try_into().unwrap(),
+            client,
+            inner_size.width.try_into().unwrap(),
+            inner_size.height.try_into().unwrap(),
         );
     }
 
     unsafe fn update_frame_bounds(&mut self, idx: ItemIdx) {
-        let (window, bounds) = self.frame_windows[&idx];
-        println!("Resizing frame window {} to bounds {:?}", window, bounds);
+        let inner_size = self.get_inner_size(idx);
+        let position_in_root = self.layout.bounds(idx).position;
+        let frame_window = self.get_frame(idx);
+        println!(
+            "Resizing frame window {} to inner size {:?}",
+            frame_window, inner_size
+        );
         XMoveResizeWindow(
             self.display,
-            window,
-            bounds.position.x.try_into().unwrap(),
-            bounds.position.y.try_into().unwrap(),
-            bounds.content.width.try_into().unwrap(),
-            bounds.content.height.try_into().unwrap(),
+            frame_window,
+            position_in_root.x.try_into().unwrap(),
+            position_in_root.y.try_into().unwrap(),
+            inner_size.width.try_into().unwrap(),
+            inner_size.height.try_into().unwrap(),
         );
     }
 
@@ -286,24 +300,25 @@ impl WmState {
 
     unsafe fn update_point(&mut self, old_point: ItemIdx, new_point: ItemIdx) {
         eprintln!("Updating point: {:?} to {:?}", old_point, new_point);
-        if let Some((old_frame, _)) = self.frame_windows.get(&old_point) {
-            XSetWindowBorder(self.display, *old_frame, BASIC_BORDER_COLOR);
+        if self.layout.exists(old_point) {
+            let old_frame = self.get_frame(old_point);
+            XSetWindowBorder(self.display, old_frame, BASIC_BORDER_COLOR);
         }
-        let (new_frame, _) = self.frame_windows[&new_point];
+        let new_frame = self.get_frame(new_point);
         XSetWindowBorder(self.display, new_frame, POINT_BORDER_COLOR);
     }
 }
 
 impl WmState {
-    pub fn new(
+    pub fn new<'a>(
         display: *mut x11::xlib::Display,
         root: x11::xlib::Window,
         bounds: WindowBounds,
+        // uhh... 
+        frames_created: &'a mut HashSet<x11::xlib::Window>
     ) -> Self {
         let mut ret = Self {
-            window_to_item_idx: Default::default(),
-            client_windows: Default::default(),
-            frame_windows: Default::default(),
+            client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
             layout: Layout::new_in_bounds(bounds),
             point: ItemIdx::Container(0),
@@ -313,13 +328,14 @@ impl WmState {
             root,
         };
         unsafe {
-            ret.make_frame(ItemIdx::Container(0));
+            let frame = ret.make_frame(ItemIdx::Container(0));
+            frames_created.insert(frame);
         }
         ret
     }
     pub fn do_and_recompute<I, F>(&mut self, closure: F)
     where
-        I: IntoIterator<Item = LayoutAction>,
+        I: IntoIterator<Item = LayoutAction<WindowData, ContainerData>>,
         F: FnOnce(&mut Self) -> I,
     {
         let old_point = self.point;
@@ -343,32 +359,39 @@ impl WmState {
             }
         }
     }
-    pub fn update_for_action(&mut self, action: LayoutAction) {
+    pub fn update_for_action(&mut self, action: LayoutAction<WindowData, ContainerData>) {
         match action {
             LayoutAction::NewBounds { idx, bounds } => {
-                self.frame_windows.get_mut(&idx).unwrap().1 = bounds;
+                let inner_size = outer_to_inner_size(bounds.content);
+                self.set_inner_size(idx, inner_size);
                 unsafe {
                     self.update_frame_bounds(idx);
                 }
-                if let ItemIdx::Window(idx) = idx {
-                    if let Some(cb) = self.client_windows.get_mut(&idx) {
-                        cb.1 = frame_bounds_to_window_bounds(bounds);
-
+                if let ItemIdx::Window(w_idx) = idx {
+                    if self
+                        .layout
+                        .try_data(idx)
+                        .map(|md| md.unwrap_window().client.is_some())
+                        .unwrap_or(false)
+                    {
                         unsafe {
-                            self.update_client_bounds(idx);
+                            self.update_client_bounds(w_idx);
                         }
                     }
                 }
             }
-            LayoutAction::ItemDestroyed { idx } => {
-                if let ItemIdx::Window(idx) = idx {
-                    if let Some((window, _)) = self.client_windows.remove(&idx) {
+            LayoutAction::ItemDestroyed { item } => {
+                if let ItemAndData::Window(idx, data) = &item {
+                    if let Some(window) = data.client {
                         unsafe {
                             self.kill_window(window);
                         }
                     }
                 }
-                let (frame, _) = self.frame_windows.remove(&idx).unwrap();
+                let frame = match item {
+                    ItemAndData::Window(_, data) => data.frame,
+                    ItemAndData::Container(_, data) => data.frame,
+                };
                 unsafe {
                     self.kill_window(frame);
                 }
@@ -416,6 +439,30 @@ impl WmState {
             wm.cursor = (new_cursor != wm.layout.cursor_before(wm.point)).then(|| new_cursor);
             None
         });
+    }
+    fn get_frame(&self, idx: ItemIdx) -> x11::xlib::Window {
+        match self.layout.try_data(idx).unwrap() {
+            fwm::LayoutDataRef::Window(data) => data.frame,
+            fwm::LayoutDataRef::Container(data) => data.frame,
+        }
+    }
+    fn set_frame(&mut self, idx: ItemIdx, frame: x11::xlib::Window) {
+        match self.layout.try_data_mut(idx).unwrap() {
+            fwm::LayoutDataMut::Window(data) => data.frame = frame,
+            fwm::LayoutDataMut::Container(data) => data.frame = frame,
+        }
+    }
+    fn get_inner_size(&self, idx: ItemIdx) -> AreaSize {
+        match self.layout.try_data(idx).unwrap() {
+            fwm::LayoutDataRef::Window(data) => data.inner_size,
+            fwm::LayoutDataRef::Container(data) => data.inner_size,
+        }
+    }
+    fn set_inner_size(&mut self, idx: ItemIdx, inner_size: AreaSize) {
+        match self.layout.try_data_mut(idx).unwrap() {
+            fwm::LayoutDataMut::Window(data) => data.inner_size = inner_size,
+            fwm::LayoutDataMut::Container(data) => data.inner_size = inner_size,
+        }
     }
 }
 
@@ -577,12 +624,12 @@ unsafe fn get_foreign_object<'a, T>(obj: SCM, r#type: SCM) -> &'a mut T {
         .expect("We should have set data in the constructor")
 }
 
-unsafe extern "C" fn x_err(display: *mut Display, ev: *mut XErrorEvent) -> i32 {
+unsafe extern "C" fn x_err(_display: *mut Display, ev: *mut XErrorEvent) -> i32 {
     eprintln!("X error: {:?}", *ev);
     0
 }
 
-unsafe extern "C" fn x_io_err(display: *mut Display) -> i32 {
+unsafe extern "C" fn x_io_err(_display: *mut Display) -> i32 {
     let e = std::io::Error::last_os_error();
     eprintln!("X io error (last: {:?})", e);
     0
@@ -615,6 +662,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     let screen = std::ptr::read(screen);
     eprintln!("screen: {:?}", screen);
 
+    // These should not themselves be framed.
+    let mut frames_created = HashSet::new();
+    
     let wm = WmState::new(
         display,
         root,
@@ -625,12 +675,14 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 height: screen.height.try_into().unwrap(),
             },
         },
+        &mut frames_created,
     );
 
     let wm_scm = make_foreign_object(wm, b"WmState\0", WM_STATE_TYPE);
 
     insert_bindings(wm_scm, bindings);
     println!("Hello, world!");
+
 
     // XGrabServer(display);
     // ... rehome windows ...
@@ -656,49 +708,56 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
             x11::xlib::CreateNotify => {
                 let XCreateWindowEvent { window, .. } = e.create_window;
                 {
+                    if frames_created.contains(&window) || window == root {
+                        // This prevents creating nested frames in an infinite loop.
+                        continue;
+                    }
                     let insert_cursor = scm_apply_1(place_new_window, wm_scm, SCM_EOL);
                     let insert_cursor =
                         MoveOrReplace::deserialize(Deserializer { scm: insert_cursor })
                             .expect("XXX");
                     let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
                     wm.do_and_recompute(|wm| {
-                        if wm.frame_windows.values().any(|(w2, _)| *w2 == window) {
-                            // Don't create a frame for an already framed window
-                            return vec![];
-                        }
                         match insert_cursor {
                             MoveOrReplace::Move(insert_cursor) => {
-                                let w_idx = wm.layout.alloc_window();
-                                wm.client_windows
-                                    .insert(w_idx, (window, Default::default()));
-                                wm.window_to_item_idx.insert(window, w_idx);
+                                // TODO refactor this --
+                                // `make_frame` is doing too much.
+                                // We should call `make_frame` to do all the x11-specific stuff,
+                                // and then have a frame to fill in here,
+                                // but then `make_frame` wouldn't be able to
+                                // rely on getting a Layout-space ItemIdx.
+                                let w_idx = wm.layout.alloc_window(WindowData {
+                                    client: Some(window),
+                                    frame: 0,
+                                    inner_size: Default::default(),
+                                });
+                                wm.client_window_to_item_idx.insert(window, w_idx);
                                 let actions =
                                     wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
                                 wm.point = ItemIdx::Window(w_idx);
                                 let frame = wm.make_frame(wm.point);
+                                frames_created.insert(frame);
                                 eprintln!("Reparenting {} into {}", window, frame);
                                 XReparentWindow(wm.display, window, frame, 0, 0);
                                 XRaiseWindow(wm.display, window);
                                 actions
                             }
                             MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
-                                let (old_frame, frame_bounds) =
-                                    wm.frame_windows.remove(&ItemIdx::Window(w_idx)).unwrap();
-                                let window_bounds = frame_bounds_to_window_bounds(frame_bounds);
-                                let maybe_old_window = wm
-                                    .client_windows
-                                    .insert(w_idx, (window, window_bounds))
-                                    .map(|(mow, _)| mow);
-                                wm.window_to_item_idx.insert(window, w_idx);
+                                let old_frame = wm.get_frame(ItemIdx::Window(w_idx));
+                                let old_bounds = wm.layout.bounds(ItemIdx::Window(w_idx));
+
+                                wm.client_window_to_item_idx.insert(window, w_idx);
                                 wm.point = ItemIdx::Window(w_idx);
                                 let frame = wm.make_frame(wm.point);
+                                frames_created.insert(frame);
                                 eprintln!("Reparenting {} into {}", window, frame);
                                 XReparentWindow(wm.display, window, frame, 0, 0);
                                 XRaiseWindow(wm.display, window);
                                 XDestroyWindow(wm.display, old_frame);
+                                frames_created.remove(&old_frame);
                                 vec![LayoutAction::NewBounds {
                                     idx: wm.point,
-                                    bounds: window_bounds,
+                                    bounds: old_bounds,
                                 }]
                             }
                             MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!(),
@@ -720,10 +779,11 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
             x11::xlib::DestroyNotify => {
                 let XDestroyWindowEvent { window, .. } = e.destroy_window;
                 let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
-                if let Entry::Occupied(oe) = wm.window_to_item_idx.entry(window) {
+                if let Entry::Occupied(oe) = wm.client_window_to_item_idx.entry(window) {
                     let idx = oe.remove();
-                    wm.client_windows.remove(&idx);
                 }
+                // TODO - call a scheme function to see whether the user wants to kill the
+                // layout slot too
             }
             _ => {}
         }
@@ -762,37 +822,6 @@ unsafe extern "C" fn cursor(state: SCM, dir: SCM) -> SCM {
     wm.navigate_cursor(dir);
     SCM_UNSPECIFIED
 }
-
-// unsafe fn item_idx_to_scm(idx: ItemIdx) -> SCM {
-//     let (sym, inner) = match idx {
-//         ItemIdx::Window(inner) => (
-//             scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"window\0").unwrap().as_ptr()),
-//             inner,
-//         ),
-//         ItemIdx::Container(inner) => (
-//             scm_from_utf8_symbol(CStr::from_bytes_with_nul(b"container\0").unwrap().as_ptr()),
-//             inner,
-//         ),
-//     };
-//     let cdr = scm_from_uint64(inner as u64);
-//     scm_cons(sym, cdr)
-// }
-
-// unsafe fn item_idx_from_scm(scm: SCM) -> ItemIdx {
-//     let car = scm_car(scm);
-//     let cdr = scm_cdr(scm);
-
-//     if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"window\0"))) {
-//         ItemIdx::Window(scm_to_uint64(cdr).try_into().unwrap())
-//     } else if scm_is_eq(
-//         car,
-//         scm_from_utf8_symbol(std::mem::transmute(b"container\0")),
-//     ) {
-//         ItemIdx::Container(scm_to_uint64(cdr).try_into().unwrap())
-//     } else {
-//         panic!("XXX")
-//     }
-// }
 
 unsafe fn scm_car(scm: SCM) -> SCM {
     if !scm_is_pair(scm) {
@@ -836,7 +865,13 @@ unsafe extern "C" fn is_occupied(state: SCM, point: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     scm_from_bool(match point {
         ItemIdx::Container(_) => true, // Containers always count as occupied, since their frame is their entire content.
-        ItemIdx::Window(w_idx) => wm.client_windows.contains_key(&w_idx),
+        ItemIdx::Window(w_idx) => wm
+            .layout
+            .try_data(point)
+            .expect("XXX")
+            .unwrap_window()
+            .client
+            .is_some(),
     })
 }
 
@@ -930,9 +965,9 @@ unsafe extern "C" fn make_cursor_before(state: SCM, point: SCM) -> SCM {
 
 unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    eprintln!("Killing item at {:?}", point);
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     wm.do_and_recompute(|wm| {
-        // let next_from_wm_point = wm.layout.topological_next(wm.point).unwrap_or_else(||wm.layout.topological_last());
         let topo_next = wm.layout.topological_next(wm.point);
         let actions = wm.layout.destroy(point);
         if !wm.layout.exists(wm.point) {
@@ -948,12 +983,12 @@ unsafe extern "C" fn kill_client_at(state: SCM, point: SCM) -> SCM {
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     wm.do_and_recompute(|wm| {
-        let w_idx = match point {
-            ItemIdx::Window(w_idx) => w_idx,
-            _ => panic!("XXX"),
-        };
-        if let Some((window, _)) = wm.client_windows.remove(&w_idx) {
-            wm.kill_window(window);
+        if let Some(LayoutDataMut::Window(WindowData { client, .. })) =
+            wm.layout.try_data_mut(point)
+        {
+            if let Some(window) = client.take() {
+                wm.kill_window(window);
+            }
         }
         None
     });
@@ -1010,6 +1045,12 @@ unsafe extern "C" fn drop_wm_state(state: SCM) {
     std::mem::drop(state);
 }
 
+unsafe extern "C" fn dump_layout(state: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let s = format!("{}", serde_json::to_string_pretty(&wm.layout).unwrap());
+    scm_from_utf8_stringn(std::mem::transmute(s.as_ptr()), s.len() as u64)
+}
+
 // TODO - codegen this, as well as translating Scheme objects to Rust objects in the function bodies
 // (similar to what we did in PyTorch)
 unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
@@ -1051,6 +1092,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, kill_item_at as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-kill-client-at\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, kill_client_at as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-dump-layout\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, dump_layout as *mut c_void);
 
     std::ptr::null_mut()
 }
@@ -1061,276 +1104,3 @@ fn main() {
         scm_shell(0, null_mut());
     }
 }
-
-// fn main() {
-//     let application =
-//         Application::new(Some("com.github.gtk-rs.examples.basic"), Default::default())
-//             .expect("failed to initialize GTK application");
-
-//     application.connect_activate(|app| {
-//         let window = ApplicationWindow::new(app);
-//         window.set_title("First GTK Program");
-
-//         let state = Rc::new(RefCell::new(WmState {
-//             windows: Default::default(),
-//             layout: Layout::new_in_bounds(Default::default()),
-//             point: ItemIdx::Container(0),
-//             cursor: None,
-//         }));
-//         window.connect_key_press_event({
-//             let state = state.clone();
-//             move |w, event| {
-//                 let uchar = event.get_keyval().to_unicode();
-//                 let mut borrow = state.borrow_mut();
-//                 println!("{:?} {:?}", event.get_state(), uchar);
-//                 let state = event.get_state();
-//                 let ctrl = state.contains(ModifierType::CONTROL_MASK);
-//                 //let shift = state.contains(ModifierType::SHIFT_MASK);
-//                 if ctrl {
-//                     if uchar == Some('\r') {
-//                         borrow.do_and_recompute(
-//                             |wm| {
-//                                 let window = wm.layout.alloc_window();
-//                                 wm.windows
-//                                     .insert(window, (thread_rng().gen(), Default::default()));
-//                                 let container = wm.layout.nearest_container(wm.point);
-//                                 let n_ctr_children = wm.layout.children(container).len();
-//                                 let actions = wm.layout.r#move(
-//                                     ItemIdx::Window(window),
-//                                     MoveCursor::Into {
-//                                         container,
-//                                         index: n_ctr_children,
-//                                     },
-//                                 );
-//                                 for a in actions.iter().copied() {
-//                                     wm.update_for_action(a, w.get_window().as_ref());
-//                                 }
-//                                 wm.point = ItemIdx::Window(window);
-//                             },
-//                             w.get_window().as_ref(),
-//                         );
-//                     } else if uchar == Some('v') {
-//                         borrow.do_and_recompute(
-//                             |wm| {
-//                                 let window = wm.layout.alloc_window();
-//                                 wm.windows
-//                                     .insert(window, (thread_rng().gen(), Default::default()));
-//                                 let point = wm.point;
-//                                 let actions = wm.layout.r#move(
-//                                     ItemIdx::Window(window),
-//                                     MoveCursor::Split {
-//                                         item: point,
-//                                         direction: Direction::Down,
-//                                     },
-//                                 );
-//                                 for a in actions.iter().copied() {
-//                                     wm.update_for_action(a, w.get_window().as_ref());
-//                                 }
-//                                 wm.point = ItemIdx::Window(window);
-//                             },
-//                             w.get_window().as_ref(),
-//                         );
-//                     } else if uchar == Some('m') {
-//                         borrow.do_and_recompute(
-//                             |wm| {
-//                                 let window = wm.layout.alloc_window();
-//                                 wm.windows
-//                                     .insert(window, (thread_rng().gen(), Default::default()));
-//                                 let point = wm.point;
-//                                 let actions = wm.layout.r#move(
-//                                     ItemIdx::Window(window),
-//                                     MoveCursor::Split {
-//                                         item: point,
-//                                         direction: Direction::Right,
-//                                     },
-//                                 );
-//                                 for a in actions.iter().copied() {
-//                                     wm.update_for_action(a, w.get_window().as_ref());
-//                                 }
-//                                 wm.point = ItemIdx::Window(window);
-//                             },
-//                             w.get_window().as_ref(),
-//                         );
-//                     } else if matches!(uchar, Some('h' | 'j' | 'k' | 'l')) {
-//                         borrow.do_and_recompute(
-//                             |wm| {
-//                                 let point = wm.point;
-//                                 let direction = match uchar.unwrap() {
-//                                     'h' => Direction::Left,
-//                                     'k' => Direction::Up,
-//                                     'l' => Direction::Right,
-//                                     'j' => Direction::Down,
-//                                     _ => unreachable!(),
-//                                 };
-//                                 if let Some(new_point) = wm.layout.navigate(point, direction, None)
-//                                 {
-//                                     wm.point = new_point;
-//                                 }
-//                             },
-//                             w.get_window().as_ref(),
-//                         );
-//                     } else if matches!(uchar, Some('H' | 'J' | 'K' | 'L')) {
-//                         borrow.do_and_recompute(
-//                             |wm| {
-//                                 let cursor = wm
-//                                     .cursor
-//                                     .unwrap_or_else(|| wm.layout.cursor_before(wm.point));
-//                                 let direction = match uchar.unwrap() {
-//                                     'H' => Direction::Left,
-//                                     'K' => Direction::Up,
-//                                     'L' => Direction::Right,
-//                                     'J' => Direction::Down,
-//                                     _ => unreachable!(),
-//                                 };
-//                                 let new_cursor = match cursor {
-//                                     MoveCursor::Split {
-//                                         item,
-//                                         direction: split_direction,
-//                                     } => wm
-//                                         .layout
-//                                         .navigate(item, direction, None)
-//                                         .map(|new_item| MoveCursor::Split {
-//                                             item: new_item,
-//                                             direction: split_direction,
-//                                         })
-//                                         .unwrap_or(cursor),
-//                                     MoveCursor::Into { container, index } => wm
-//                                         .layout
-//                                         .navigate2(
-//                                             ChildLocation { container, index },
-//                                             direction,
-//                                             None,
-//                                             true,
-//                                             false,
-//                                         )
-//                                         .map(|ChildLocation { container, index }| {
-//                                             MoveCursor::Into { container, index }
-//                                         })
-//                                         .unwrap_or(cursor),
-//                                 };
-//                                 wm.cursor = (new_cursor != wm.layout.cursor_before(wm.point))
-//                                     .then(|| new_cursor)
-//                             },
-//                             w.get_window().as_ref(),
-//                         );
-//                     } else if uchar == Some('"') {
-//                         borrow.do_and_recompute(
-//                             |wm| {
-//                                 let point = wm.point;
-//                                 let new_point = wm.layout.topological_next(point);
-//                                 let actions = wm.layout.destroy(point);
-//                                 let new_point =
-//                                     new_point.unwrap_or_else(|| wm.layout.topological_last());
-//                                 wm.point = new_point;
-//                                 for a in actions.iter().copied() {
-//                                     wm.update_for_action(a, w.get_window().as_ref());
-//                                 }
-//                             },
-//                             w.get_window().as_ref(),
-//                         );
-//                     } else if uchar == Some('a') {
-//                         borrow.do_and_recompute(
-//                             |wm| {
-//                                 let point = wm.point;
-//                                 if let Some(parent) = wm.layout.parent_container(point) {
-//                                     let new_point = ItemIdx::Container(parent);
-//                                     wm.point = new_point;
-//                                 }
-//                             },
-//                             w.get_window().as_ref(),
-//                         );
-//                     } else if uchar == Some('p') {
-//                         println!("{}", serde_json::to_string_pretty(&borrow.layout).unwrap());
-//                     }
-//                 }
-//                 Inhibit(true)
-//             }
-//         });
-//         let da = DrawingArea::new();
-//         da.connect_size_allocate({
-//             let state = state.clone();
-//             move |da, allocation| {
-//                 let mut borrow = state.borrow_mut();
-//                 let actions = borrow.layout.resize(a_to_wb(*allocation));
-//                 for a in actions.iter().copied() {
-//                     borrow.update_for_action(a, da.get_window().as_ref());
-//                 }
-//             }
-//         });
-//         da.connect_draw({
-//             let state = state.clone();
-//             move |_, cr| {
-//                 let borrow = state.borrow();
-//                 for (
-//                     Rgb { r, g, b },
-//                     WindowBounds {
-//                         content: AreaSize { height, width },
-//                         position: Position { x, y },
-//                     },
-//                 ) in borrow.windows.values()
-//                 {
-//                     cr.set_source_rgb(*r as f64 / 255.0, *g as f64 / 255.0, *b as f64 / 255.0);
-//                     cr.rectangle(*x as f64, *y as f64, *width as f64, *height as f64);
-//                     cr.fill();
-//                 }
-//                 cr.set_source_rgb(0.537, 0.812, 0.941);
-//                 cr.set_line_width(POINT_LINE_WIDTH);
-//                 let point = borrow.point;
-//                 let WindowBounds {
-//                     content: AreaSize { height, width },
-//                     position: Position { x, y },
-//                 } = borrow.layout.bounds(point);
-//                 cr.rectangle(x as f64, y as f64, width as f64, height as f64);
-//                 cr.stroke();
-//                 if let Some(cursor) = borrow.cursor {
-//                     cr.set_source_rgb(1.0, 0.0, 0.0);
-//                     cr.set_line_width(POINT_LINE_WIDTH);
-
-//                     match cursor {
-//                         MoveCursor::Split { item, direction } => {
-//                             let WindowBounds {
-//                                 content:
-//                                     AreaSize {
-//                                         mut height,
-//                                         mut width,
-//                                     },
-//                                 position: Position { mut x, mut y },
-//                             } = borrow.layout.bounds(item);
-//                             match direction {
-//                                 Direction::Up => {
-//                                     height /= 2;
-//                                 }
-//                                 Direction::Down => {
-//                                     height /= 2;
-//                                     y += height;
-//                                 }
-//                                 Direction::Left => {
-//                                     width /= 2;
-//                                 }
-//                                 Direction::Right => {
-//                                     width /= 2;
-//                                     x += width;
-//                                 }
-//                             }
-//                             cr.rectangle(x as f64, y as f64, width as f64, height as f64);
-//                         }
-//                         MoveCursor::Into { container, index } => {
-//                             let WindowBounds {
-//                                 content: AreaSize { height, width },
-//                                 position: Position { x, y },
-//                             } = borrow.layout.inter_bounds(container, index);
-//                             cr.rectangle(x as f64, y as f64, width as f64, height as f64);
-//                         }
-//                     }
-//                     cr.stroke();
-//                 }
-//                 Inhibit(true)
-//             }
-//         });
-//         window.add(&da);
-
-//         window.show_all();
-//     });
-
-//     application.run(&[]);
-// }
