@@ -732,61 +732,65 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 //     continue;
                 // }
 
-                let insert_cursor = scm_apply_1(place_new_window, wm_scm, SCM_EOL);
-                let insert_cursor =
-                    MoveOrReplace::deserialize(Deserializer { scm: insert_cursor }).expect("XXX");
                 let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
-                wm.do_and_recompute(|wm| {
-                    match insert_cursor {
-                        MoveOrReplace::Move(insert_cursor) => {
-                            // TODO refactor this --
-                            // `make_frame` is doing too much.
-                            // We should call `make_frame` to do all the x11-specific stuff,
-                            // and then have a frame to fill in here,
-                            // but then `make_frame` wouldn't be able to
-                            // rely on getting a Layout-space ItemIdx.
-                            let w_idx = wm.layout.alloc_window(WindowData {
-                                client: Some(window),
-                                frame: 0,
-                                inner_size: Default::default(),
-                            });
-                            wm.client_window_to_item_idx.insert(window, w_idx);
-                            let actions = wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
-                            wm.point = ItemIdx::Window(w_idx);
-                            let frame = wm.make_frame(wm.point);
-                            frames_created.insert(frame);
-                            eprintln!("Reparenting {} into {}", window, frame);
-                            XReparentWindow(wm.display, window, frame, 0, 0);
-                            XRaiseWindow(wm.display, window);
-                            actions
-                        }
-                        MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
-                            let old_frame = wm.get_frame(ItemIdx::Window(w_idx));
-                            let old_bounds = wm.layout.bounds(ItemIdx::Window(w_idx));
+                let already_mapped = wm.client_window_to_item_idx.contains_key(&window);
 
-                            wm.client_window_to_item_idx.insert(window, w_idx);
-                            wm.point = ItemIdx::Window(w_idx);
-                            wm.set_frame(wm.point, 0);
-                            wm.layout
-                                .try_data_mut(wm.point)
-                                .unwrap()
-                                .unwrap_window()
-                                .client = Some(window);
-                            let frame = wm.make_frame(wm.point);
-                            frames_created.insert(frame);
-                            eprintln!("Reparenting {} into {}", window, frame);
-                            XReparentWindow(wm.display, window, frame, 0, 0);
-                            XRaiseWindow(wm.display, window);
-                            XDestroyWindow(wm.display, old_frame);
-                            frames_created.remove(&old_frame);
-                            vec![LayoutAction::NewBounds {
-                                idx: wm.point,
-                                bounds: old_bounds,
-                            }]
+                if !already_mapped {
+                    let insert_cursor = scm_apply_1(place_new_window, wm_scm, SCM_EOL);
+                    let insert_cursor =
+                        MoveOrReplace::deserialize(Deserializer { scm: insert_cursor }).expect("XXX");
+                    wm.do_and_recompute(|wm| {
+                        match insert_cursor {
+                            MoveOrReplace::Move(insert_cursor) => {
+                                // TODO refactor this --
+                                // `make_frame` is doing too much.
+                                // We should call `make_frame` to do all the x11-specific stuff,
+                                // and then have a frame to fill in here,
+                                // but then `make_frame` wouldn't be able to
+                                // rely on getting a Layout-space ItemIdx.
+                                let w_idx = wm.layout.alloc_window(WindowData {
+                                    client: Some(window),
+                                    frame: 0,
+                                    inner_size: Default::default(),
+                                });
+                                wm.client_window_to_item_idx.insert(window, w_idx);
+                                let actions = wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
+                                wm.point = ItemIdx::Window(w_idx);
+                                let frame = wm.make_frame(wm.point);
+                                frames_created.insert(frame);
+                                eprintln!("Reparenting {} into {}", window, frame);
+                                XReparentWindow(wm.display, window, frame, 0, 0);
+                                XRaiseWindow(wm.display, window);
+                                actions
+                            }
+                            MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
+                                let old_frame = wm.get_frame(ItemIdx::Window(w_idx));
+                                let old_bounds = wm.layout.bounds(ItemIdx::Window(w_idx));
+
+                                wm.client_window_to_item_idx.insert(window, w_idx);
+                                wm.point = ItemIdx::Window(w_idx);
+                                wm.set_frame(wm.point, 0);
+                                wm.layout
+                                    .try_data_mut(wm.point)
+                                    .unwrap()
+                                    .unwrap_window()
+                                    .client = Some(window);
+                                let frame = wm.make_frame(wm.point);
+                                frames_created.insert(frame);
+                                eprintln!("Reparenting {} into {}", window, frame);
+                                XReparentWindow(wm.display, window, frame, 0, 0);
+                                XRaiseWindow(wm.display, window);
+                                XDestroyWindow(wm.display, old_frame);
+                                frames_created.remove(&old_frame);
+                                vec![LayoutAction::NewBounds {
+                                    idx: wm.point,
+                                    bounds: old_bounds,
+                                }]
+                            }
+                            MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!(),
                         }
-                        MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!(),
-                    }
-                });
+                    });
+                }
                 XMapWindow(display, window);
             }
             x11::xlib::DestroyNotify => {
