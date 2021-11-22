@@ -713,13 +713,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
             }
             x11::xlib::MapRequest => {
                 let XMapRequestEvent { window, .. } = e.map_request;
-                let mut attrib: MaybeUninit<XWindowAttributes> = MaybeUninit::uninit();
-                XGetWindowAttributes(display, window, attrib.as_mut_ptr());
-                let attrib = attrib.assume_init();
-                eprintln!(
-                    "Mapping window {} with w: {}, h: {}, x: {}, y: {}",
-                    window, attrib.width, attrib.height, attrib.x, attrib.y
-                );
                 if frames_created.contains(&window) || window == root {
                     // This prevents creating nested frames in an infinite loop.
                     continue;
@@ -819,10 +812,6 @@ enum SpatialDir {
     Planar(Direction),
     Parent,
     Child,
-}
-
-fn scm_is_eq(x: SCM, y: SCM) -> bool {
-    x == y
 }
 
 unsafe extern "C" fn navigate(state: SCM, dir: SCM) -> SCM {
