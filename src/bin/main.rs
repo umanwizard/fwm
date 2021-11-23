@@ -69,6 +69,8 @@ use x11::xlib::NoSymbol;
 use x11::xlib::ShiftMask;
 use x11::xlib::SubstructureNotifyMask;
 use x11::xlib::SubstructureRedirectMask;
+use x11::xlib::XConfigureRequestEvent;
+use x11::xlib::XConfigureWindow;
 use x11::xlib::XCreateSimpleWindow;
 use x11::xlib::XCreateWindowEvent;
 use x11::xlib::XDefaultRootWindow;
@@ -106,6 +108,7 @@ use x11::xlib::XStringToKeysym;
 use x11::xlib::XSync;
 use x11::xlib::XUngrabKey;
 use x11::xlib::XWindowAttributes;
+use x11::xlib::XWindowChanges;
 
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
@@ -711,6 +714,41 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 let XCreateWindowEvent { window, .. } = e.create_window;
                 {}
             }
+            x11::xlib::ConfigureRequest => {
+                // Let windows do whatever they want if we haven't taken them over yet.
+                let ev = e.configure_request;
+                let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                let maybe_idx = wm.client_window_to_item_idx.get(&ev.window);
+
+                if maybe_idx.is_none() {
+                    let mut changes = XWindowChanges {
+                        x: ev.x,
+                        y: ev.y,
+                        width: ev.width,
+                        height: ev.height,
+                        border_width: ev.border_width,
+                        sibling: ev.above, // no clue, but this is what basic_wm does.
+                        stack_mode: ev.detail, // idem
+                    };
+                    XConfigureWindow(display, ev.window, ev.value_mask.try_into().unwrap(), &mut changes as *mut XWindowChanges);
+                } else {
+                    // We already control you -- sorry, but you don't get to fight with us about position/size.
+                    // But we'll at least pass along the request, so clients don't get confused.
+                    let idx = *maybe_idx.unwrap();
+                    let size = wm.get_inner_size(ItemIdx::Window(idx));
+                    let mut changes = XWindowChanges {
+                        x: 0,
+                        y: 0,
+                        width: (size.width - 2 * ev.border_width as usize).try_into().unwrap(),
+                        height: (size.height - 2 * ev.border_width as usize).try_into().unwrap(),
+                        border_width: ev.border_width,
+                        sibling: ev.above, // no clue
+                        stack_mode: ev.detail, // no clue
+                    };
+                    XConfigureWindow(display, ev.window, ev.value_mask.try_into().unwrap(), &mut changes as *mut XWindowChanges);
+                }
+            }
+               
             x11::xlib::MapRequest => {
                 let XMapRequestEvent { window, .. } = e.map_request;
                 if frames_created.contains(&window) || window == root {
