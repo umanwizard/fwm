@@ -24,6 +24,7 @@ use rand::distributions::{Distribution, Standard};
 use rand::thread_rng;
 use rand::Rng;
 use rust_guile::scm_apply_1;
+use rust_guile::scm_apply_3;
 use rust_guile::scm_assert_foreign_object_type;
 use rust_guile::scm_assq_ref;
 use rust_guile::scm_c_define_gsubr;
@@ -54,6 +55,7 @@ use serde::Serialize;
 use x11::keysym::XK_4;
 use x11::keysym::XK_F4;
 use x11::xlib::ControlMask;
+use x11::xlib::CurrentTime;
 use x11::xlib::Display;
 use x11::xlib::GrabModeAsync;
 use x11::xlib::InputOnly;
@@ -66,6 +68,8 @@ use x11::xlib::Mod3Mask;
 use x11::xlib::Mod4Mask;
 use x11::xlib::Mod5Mask;
 use x11::xlib::NoSymbol;
+use x11::xlib::RevertToNone;
+use x11::xlib::RevertToPointerRoot;
 use x11::xlib::ShiftMask;
 use x11::xlib::SubstructureNotifyMask;
 use x11::xlib::SubstructureRedirectMask;
@@ -102,6 +106,7 @@ use x11::xlib::XScreenOfDisplay;
 use x11::xlib::XSelectInput;
 use x11::xlib::XSetErrorHandler;
 use x11::xlib::XSetIOErrorHandler;
+use x11::xlib::XSetInputFocus;
 use x11::xlib::XSetWindowAttributes;
 use x11::xlib::XSetWindowBorder;
 use x11::xlib::XStringToKeysym;
@@ -183,6 +188,7 @@ struct ContainerData {
 struct WmState {
     pub client_window_to_item_idx: HashMap<x11::xlib::Window, usize>,
     pub bindings: HashMap<KeyCombo, ProtectedScm>,
+    pub on_point_changed: ProtectedScm,
     pub layout: Layout<WindowData, ContainerData>,
     pub point: ItemIdx,
     pub cursor: Option<MoveCursor>,
@@ -310,6 +316,14 @@ impl WmState {
         }
         let new_frame = self.get_frame(new_point);
         XSetWindowBorder(self.display, new_frame, POINT_BORDER_COLOR);
+        // XXX - change how passing back self works, so we can let Scheme handle this
+        // if old_point != new_point {
+        //     self.call_on_point_changed(old_point, new_point)
+        // }
+        // XXX for now we just hardcode focus
+        if let Some(client) = self.try_get_client(new_point) {
+            XSetInputFocus(self.display, client, RevertToPointerRoot, CurrentTime);
+        }
     }
 }
 
@@ -318,12 +332,14 @@ impl WmState {
         display: *mut x11::xlib::Display,
         root: x11::xlib::Window,
         bounds: WindowBounds,
+        on_point_changed: ProtectedScm,
         // uhh...
         frames_created: &'a mut HashSet<x11::xlib::Window>,
     ) -> Self {
         let mut ret = Self {
             client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
+            on_point_changed,
             layout: Layout::new_in_bounds(bounds),
             point: ItemIdx::Container(0),
             cursor: None,
@@ -352,15 +368,11 @@ impl WmState {
             eprintln!("Running action: {:?}", action);
             self.update_for_action(action);
         }
-        if new_point != old_point {
-            unsafe {
-                self.update_point(old_point, new_point);
-            }
+        unsafe {
+            self.update_point(old_point, new_point);
         }
-        if new_cursor != old_cursor {
-            unsafe {
-                self.update_cursor(old_cursor, new_cursor);
-            }
+        unsafe {
+            self.update_cursor(old_cursor, new_cursor);
         }
     }
     pub fn update_for_action(&mut self, action: LayoutAction<WindowData, ContainerData>) {
@@ -467,6 +479,14 @@ impl WmState {
             fwm::LayoutDataMut::Window(data) => data.inner_size = inner_size,
             fwm::LayoutDataMut::Container(data) => data.inner_size = inner_size,
         }
+    }
+    fn try_get_client(&mut self, idx: ItemIdx) -> Option<u64> {
+        self.layout.try_data(idx).and_then(|data| {
+            match data {
+                fwm::LayoutDataRef::Window(w_data) => w_data.client,
+                fwm::LayoutDataRef::Container(_) => None,
+            }
+        })
     }
 }
 
@@ -648,6 +668,10 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"place-new-window\0")),
     );
+    let on_point_changed = ProtectedScm(scm_assq_ref(
+        config,
+        scm_from_utf8_symbol(std::mem::transmute(b"on-point-changed\0"))
+    ));
     let display = XOpenDisplay(null());
     assert!(!display.is_null());
     XSetErrorHandler(Some(x_err));
@@ -679,6 +703,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 height: screen.height.try_into().unwrap(),
             },
         },
+        on_point_changed,
         &mut frames_created,
     );
 
@@ -730,7 +755,12 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                         sibling: ev.above, // no clue, but this is what basic_wm does.
                         stack_mode: ev.detail, // idem
                     };
-                    XConfigureWindow(display, ev.window, ev.value_mask.try_into().unwrap(), &mut changes as *mut XWindowChanges);
+                    XConfigureWindow(
+                        display,
+                        ev.window,
+                        ev.value_mask.try_into().unwrap(),
+                        &mut changes as *mut XWindowChanges,
+                    );
                 } else {
                     // We already control you -- sorry, but you don't get to fight with us about position/size.
                     // But we'll at least pass along the request, so clients don't get confused.
@@ -739,16 +769,25 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     let mut changes = XWindowChanges {
                         x: 0,
                         y: 0,
-                        width: (size.width - 2 * ev.border_width as usize).try_into().unwrap(),
-                        height: (size.height - 2 * ev.border_width as usize).try_into().unwrap(),
+                        width: (size.width - 2 * ev.border_width as usize)
+                            .try_into()
+                            .unwrap(),
+                        height: (size.height - 2 * ev.border_width as usize)
+                            .try_into()
+                            .unwrap(),
                         border_width: ev.border_width,
-                        sibling: ev.above, // no clue
+                        sibling: ev.above,     // no clue
                         stack_mode: ev.detail, // no clue
                     };
-                    XConfigureWindow(display, ev.window, ev.value_mask.try_into().unwrap(), &mut changes as *mut XWindowChanges);
+                    XConfigureWindow(
+                        display,
+                        ev.window,
+                        ev.value_mask.try_into().unwrap(),
+                        &mut changes as *mut XWindowChanges,
+                    );
                 }
             }
-               
+
             x11::xlib::MapRequest => {
                 let XMapRequestEvent { window, .. } = e.map_request;
                 if frames_created.contains(&window) || window == root {
@@ -769,7 +808,8 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 if !already_mapped {
                     let insert_cursor = scm_apply_1(place_new_window, wm_scm, SCM_EOL);
                     let insert_cursor =
-                        MoveOrReplace::deserialize(Deserializer { scm: insert_cursor }).expect("XXX");
+                        MoveOrReplace::deserialize(Deserializer { scm: insert_cursor })
+                            .expect("XXX");
                     wm.do_and_recompute(|wm| {
                         match insert_cursor {
                             MoveOrReplace::Move(insert_cursor) => {
@@ -785,7 +825,8 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                     inner_size: Default::default(),
                                 });
                                 wm.client_window_to_item_idx.insert(window, w_idx);
-                                let actions = wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
+                                let actions =
+                                    wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
                                 wm.point = ItemIdx::Window(w_idx);
                                 let frame = wm.make_frame(wm.point);
                                 frames_created.insert(frame);
