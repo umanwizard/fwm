@@ -4,6 +4,7 @@
       (f wm (fwm-get-point wm)))))
 
 (system "xmodmap ~/.Xmodmap")
+(system "xscreensaver -no-splash&")
 
 (define bindings
   (let ([mod "mod3"])
@@ -40,6 +41,7 @@
 					;        (cons (fwm-parse-key-combo (string-append mod "+G")) fwm-cursor-to-point)
      (cons (fwm-parse-key-combo (string-append mod "+Return")) (lambda (x) (system "sakura&")))
      (cons (fwm-parse-key-combo (string-append mod "+e")) (lambda (x) (system "rofi -show run&")))
+     (cons (fwm-parse-key-combo (string-append mod "+q")) (lambda (x) (system "xscreensaver-command -lock&")))
      )
     )
   )
