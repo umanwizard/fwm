@@ -3,8 +3,8 @@ use std::{
     ptr::null_mut,
 };
 
-use fwm::scheme::{Deserializer, Serializer, SCM_UNSPECIFIED};
-use rust_guile::{scm_c_define_gsubr, scm_shell, scm_with_guile, SCM};
+use fwm::scheme::{Deserializer, Serializer};
+use rust_guile::{scm_c_define_gsubr, scm_shell, scm_with_guile, SCM, SCM_UNSPECIFIED};
 use serde::Deserialize;
 use serde::Serialize;
 

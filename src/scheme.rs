@@ -12,7 +12,7 @@ use rust_guile::{
     scm_from_utf8_symboln, scm_gc_malloc, scm_integer_to_char, scm_is_bytevector,
     scm_is_signed_integer, scm_is_unsigned_integer, scm_real_p, scm_symbol_p, scm_symbol_to_string,
     scm_to_double, scm_to_int64, scm_to_int8, scm_to_uint32, scm_to_uint64, scm_to_utf32_stringn,
-    scm_to_utf8_stringn, SCM,
+    scm_to_utf8_stringn, SCM, scm_cons, SCM_BOOL_T, SCM_BOOL_F, SCM_EOL, try_scm_decons, try_scm_to_sym, scm_is_truthy, try_scm_to_signed, try_scm_to_unsigned, try_scm_to_double, try_scm_to_char, try_scm_to_string_or_sym, try_scm_to_bytes,
 };
 use serde::{
     de,
@@ -60,29 +60,6 @@ impl de::Error for Error {
     {
         todo!()
     }
-}
-
-pub const SCM_BOOL_F: SCM = 0x4 as SCM;
-pub const SCM_BOOL_T: SCM = 0x404 as SCM;
-pub const SCM_UNSPECIFIED: SCM = 0x804 as SCM;
-pub const SCM_EOL: SCM = 0x304 as SCM;
-
-pub fn scm_is_true(scm: SCM) -> bool {
-    !(scm == SCM_BOOL_F)
-}
-
-#[repr(C)]
-struct ScmCell {
-    car: SCM,
-    cdr: SCM,
-}
-
-pub fn scm_cons(car: SCM, cdr: SCM) -> SCM {
-    let cell = unsafe { scm_gc_malloc(size_of::<ScmCell>() as u64, null()) } as *mut ScmCell;
-    unsafe {
-        std::ptr::write(cell, ScmCell { car, cdr });
-    }
-    cell as SCM
 }
 
 pub enum ListSerializer {
@@ -526,107 +503,6 @@ pub struct Deserializer {
     pub scm: SCM,
 }
 
-pub fn try_scm_to_signed(scm: SCM) -> Option<i64> {
-    unsafe { (scm_is_signed_integer(scm, i64::MIN, i64::MAX) != 0).then(|| scm_to_int64(scm)) }
-}
-
-pub fn try_scm_to_unsigned(scm: SCM) -> Option<u64> {
-    unsafe { (scm_is_unsigned_integer(scm, u64::MIN, u64::MAX) != 0).then(|| scm_to_uint64(scm)) }
-}
-
-pub fn try_scm_to_double(scm: SCM) -> Option<f64> {
-    unsafe { (scm_is_true(scm_real_p(scm))).then(|| scm_to_double(scm)) }
-}
-
-pub fn try_scm_to_char(scm: SCM) -> Option<char> {
-    unsafe {
-        (scm_is_true(scm_char_p(scm)))
-            .then(|| scm_to_uint32(scm_integer_to_char(scm)))
-            .map(|ch| ch.try_into().unwrap())
-    }
-}
-
-pub fn scm_imp(scm: SCM) -> bool {
-    (scm as usize) & 0x6 != 0
-}
-
-pub fn scm_nimp(scm: SCM) -> bool {
-    !scm_imp(scm)
-}
-
-pub fn scm_typ7(scm: SCM) -> u8 {
-    (unsafe { std::ptr::read(scm as *const usize) } as u8) & 0x7f
-}
-
-pub fn scm_is_string(scm: SCM) -> bool {
-    scm_nimp(scm) && scm_typ7(scm) == 0x15
-}
-
-pub fn try_scm_to_sym(scm: SCM) -> Option<String> {
-    unsafe {
-        scm_is_true(scm_symbol_p(scm)).then(|| {
-            let mut len = MaybeUninit::uninit();
-            let data = scm_to_utf8_stringn(scm_symbol_to_string(scm), len.as_mut_ptr());
-            let len = len.assume_init();
-            String::from_raw_parts(
-                std::mem::transmute(data),
-                len.try_into().unwrap(),
-                len.try_into().unwrap(),
-            )
-        })
-    }
-}
-
-pub fn try_scm_to_string_or_sym(scm: SCM) -> Option<String> {
-    unsafe {
-        scm_is_string(scm)
-            .then(|| {
-                let mut len = MaybeUninit::uninit();
-                let data = scm_to_utf8_stringn(scm, len.as_mut_ptr());
-                let len = len.assume_init();
-                String::from_raw_parts(
-                    std::mem::transmute(data),
-                    len.try_into().unwrap(),
-                    len.try_into().unwrap(),
-                )
-            })
-            .or_else(|| try_scm_to_sym(scm))
-    }
-}
-
-pub fn try_scm_to_bytes(scm: SCM) -> Option<Vec<u8>> {
-    unsafe {
-        (scm_is_bytevector(scm) != 0).then(|| {
-            let len = scm_c_bytevector_length(scm);
-            let mut vec = Vec::with_capacity(len.try_into().unwrap());
-            for i in 0..len {
-                vec.push(scm_c_bytevector_ref(scm, i)); // Is there really no more performant way than the loop?
-            }
-            vec
-        })
-    }
-}
-
-pub unsafe fn scm_car_unchecked(scm: SCM) -> SCM {
-    std::ptr::read(scm as *const SCM)
-}
-
-pub unsafe fn scm_cdr_unchecked(scm: SCM) -> SCM {
-    std::ptr::read((scm as *const SCM).add(1))
-}
-
-pub fn scm_is_pair(scm: SCM) -> bool {
-    unsafe {
-        let raw = scm as usize;
-        // See "Representation of scheme objects" in scm.h
-        ((raw & 6) == 0) && ((std::ptr::read(scm as *const usize) & 1) == 0)
-    }
-}
-
-pub fn try_scm_decons(scm: SCM) -> Option<(SCM, SCM)> {
-    unsafe { scm_is_pair(scm).then(|| (scm_car_unchecked(scm), scm_cdr_unchecked(scm))) }
-}
-
 struct ListAccess {
     scm: SCM,
 }
@@ -800,7 +676,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_bool(scm_is_true(self.scm))
+        visitor.visit_bool(scm_is_truthy(self.scm))
     }
 
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>

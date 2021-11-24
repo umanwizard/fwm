@@ -11,23 +11,20 @@ use ::fwm::WindowBounds;
 use fwm::ItemAndData;
 use fwm::LayoutDataMut;
 
-use fwm::scheme::scm_car_unchecked;
-use fwm::scheme::scm_cdr_unchecked;
-use fwm::scheme::scm_cons;
-use fwm::scheme::scm_is_pair;
-use fwm::scheme::scm_is_true;
 use fwm::scheme::Deserializer;
 use fwm::scheme::Serializer;
-use fwm::scheme::SCM_EOL;
-use fwm::scheme::SCM_UNSPECIFIED;
 use rand::distributions::{Distribution, Standard};
 use rand::thread_rng;
 use rand::Rng;
+use rust_guile::SCM_EOL;
+use rust_guile::SCM_UNSPECIFIED;
 use rust_guile::scm_apply_1;
 use rust_guile::scm_apply_3;
 use rust_guile::scm_assert_foreign_object_type;
 use rust_guile::scm_assq_ref;
 use rust_guile::scm_c_define_gsubr;
+use rust_guile::scm_car_unchecked;
+use rust_guile::scm_cdr_unchecked;
 use rust_guile::scm_eq_p;
 use rust_guile::scm_foreign_object_ref;
 use rust_guile::scm_from_uint64;
@@ -37,6 +34,8 @@ use rust_guile::scm_gc_malloc;
 use rust_guile::scm_gc_malloc_pointerless;
 use rust_guile::scm_gc_protect_object;
 use rust_guile::scm_gc_unprotect_object;
+use rust_guile::scm_is_pair;
+use rust_guile::scm_is_truthy;
 use rust_guile::scm_list_1;
 use rust_guile::scm_make_foreign_object_1;
 use rust_guile::scm_make_foreign_object_type;
@@ -1113,7 +1112,7 @@ unsafe extern "C" fn insert_bindings(state: SCM, mut bindings: SCM) -> SCM {
         let proc = scm_cdr_unchecked(binding);
 
         // XXX handle error
-        assert!(scm_is_true(scm_procedure_p(proc)));
+        assert!(scm_is_truthy(scm_procedure_p(proc)));
         let kc = get_foreign_object::<KeyCombo>(kc, KEY_COMBO_TYPE).clone();
         state.bindings.insert(kc, ProtectedScm::new(proc));
         XGrabKey(

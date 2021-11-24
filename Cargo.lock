@@ -116,8 +116,7 @@ dependencies = [
 [[package]]
 name = "rust-guile"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "420a865051855049afd512e220f1cf1d9b42f596d2035112eed490312c5989e8"
+source = "git+https://gitlab.com/btv/rust-guile?branch=utils#7f28fcb5ee3a5bb2e6561aed82179d77f4717c0a"
 dependencies = [
  "pkg-config",
 ]
