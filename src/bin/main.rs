@@ -769,13 +769,13 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     let mut changes = XWindowChanges {
                         x: 0,
                         y: 0,
-                        width: (size.width - 2 * ev.border_width as usize)
+                        width: size.width
                             .try_into()
                             .unwrap(),
-                        height: (size.height - 2 * ev.border_width as usize)
+                        height: size.height
                             .try_into()
                             .unwrap(),
-                        border_width: ev.border_width,
+                        border_width: 0,
                         sibling: ev.above,     // no clue
                         stack_mode: ev.detail, // no clue
                     };
