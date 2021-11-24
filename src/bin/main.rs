@@ -54,6 +54,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use x11::keysym::XK_4;
 use x11::keysym::XK_F4;
+use x11::xlib::ConfigureNotify;
 use x11::xlib::ControlMask;
 use x11::xlib::CurrentTime;
 use x11::xlib::Display;
@@ -71,8 +72,10 @@ use x11::xlib::NoSymbol;
 use x11::xlib::RevertToNone;
 use x11::xlib::RevertToPointerRoot;
 use x11::xlib::ShiftMask;
+use x11::xlib::StructureNotifyMask;
 use x11::xlib::SubstructureNotifyMask;
 use x11::xlib::SubstructureRedirectMask;
+use x11::xlib::XConfigureEvent;
 use x11::xlib::XConfigureRequestEvent;
 use x11::xlib::XConfigureWindow;
 use x11::xlib::XCreateSimpleWindow;
@@ -104,6 +107,7 @@ use x11::xlib::XResizeWindow;
 use x11::xlib::XScreenCount;
 use x11::xlib::XScreenOfDisplay;
 use x11::xlib::XSelectInput;
+use x11::xlib::XSendEvent;
 use x11::xlib::XSetErrorHandler;
 use x11::xlib::XSetIOErrorHandler;
 use x11::xlib::XSetInputFocus;
@@ -188,7 +192,7 @@ struct ContainerData {
 struct WmState {
     pub client_window_to_item_idx: HashMap<x11::xlib::Window, usize>,
     pub bindings: HashMap<KeyCombo, ProtectedScm>,
-//    pub on_point_changed: ProtectedScm,
+    //    pub on_point_changed: ProtectedScm,
     pub layout: Layout<WindowData, ContainerData>,
     pub point: ItemIdx,
     pub cursor: Option<MoveCursor>,
@@ -332,14 +336,14 @@ impl WmState {
         display: *mut x11::xlib::Display,
         root: x11::xlib::Window,
         bounds: WindowBounds,
-//        on_point_changed: ProtectedScm,
+        //        on_point_changed: ProtectedScm,
         // uhh...
         frames_created: &'a mut HashSet<x11::xlib::Window>,
     ) -> Self {
         let mut ret = Self {
             client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
-//            on_point_changed,
+            //            on_point_changed,
             layout: Layout::new_in_bounds(bounds),
             point: ItemIdx::Container(0),
             cursor: None,
@@ -481,11 +485,9 @@ impl WmState {
         }
     }
     fn try_get_client(&mut self, idx: ItemIdx) -> Option<u64> {
-        self.layout.try_data(idx).and_then(|data| {
-            match data {
-                fwm::LayoutDataRef::Window(w_data) => w_data.client,
-                fwm::LayoutDataRef::Container(_) => None,
-            }
+        self.layout.try_data(idx).and_then(|data| match data {
+            fwm::LayoutDataRef::Window(w_data) => w_data.client,
+            fwm::LayoutDataRef::Container(_) => None,
         })
     }
 }
@@ -703,14 +705,13 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 height: screen.height.try_into().unwrap(),
             },
         },
-//        on_point_changed,
+        //        on_point_changed,
         &mut frames_created,
     );
 
     let wm_scm = make_foreign_object(wm, b"WmState\0", WM_STATE_TYPE);
 
     insert_bindings(wm_scm, bindings);
-    println!("Hello, world!");
 
     // XGrabServer(display);
     // ... rehome windows ...
@@ -718,7 +719,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
 
     loop {
         let mut e = MaybeUninit::<XEvent>::uninit();
-        println!("About to grab event");
         XNextEvent(display, e.as_mut_ptr());
         let e = e.assume_init();
         println!("Event: {:?}", e);
@@ -728,7 +728,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 let keysym = XKeycodeToKeysym(display, keycode.try_into().unwrap(), 0); // TODO - figure out what the zero means here.
 
                 let combo = KeyCombo::from_x(keysym, state);
-                eprintln!("{}", combo);
+                println!("{}", combo);
                 let proc = {
                     let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
                     wm.bindings[&combo].0 // XXX
@@ -743,48 +743,60 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 // Let windows do whatever they want if we haven't taken them over yet.
                 let ev = e.configure_request;
                 let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
-                let maybe_idx = wm.client_window_to_item_idx.get(&ev.window);
+                match wm.client_window_to_item_idx.get(&ev.window).copied() {
+                    None => {
+                        let mut changes = XWindowChanges {
+                            x: ev.x,
+                            y: ev.y,
+                            width: ev.width,
+                            height: ev.height,
+                            border_width: ev.border_width,
+                            sibling: ev.above, // no clue, but this is what basic_wm does.
+                            stack_mode: ev.detail, // idem
+                        };
+                        XConfigureWindow(
+                            display,
+                            ev.window,
+                            ev.value_mask.try_into().unwrap(),
+                            &mut changes as *mut XWindowChanges,
+                        );
+                    }
+                    Some(w_idx) => {
+                        // We already control you -- sorry, but you don't get to fight with us about position/size.
+                        // Notify you of your real coordinates.
+                        let idx = ItemIdx::Window(w_idx);
+                        let WindowBounds {
+                            content: _,
+                            position,
+                        } = wm.layout.bounds(idx);
+                        let size = wm.get_inner_size(idx);
 
-                if maybe_idx.is_none() {
-                    let mut changes = XWindowChanges {
-                        x: ev.x,
-                        y: ev.y,
-                        width: ev.width,
-                        height: ev.height,
-                        border_width: ev.border_width,
-                        sibling: ev.above, // no clue, but this is what basic_wm does.
-                        stack_mode: ev.detail, // idem
-                    };
-                    XConfigureWindow(
-                        display,
-                        ev.window,
-                        ev.value_mask.try_into().unwrap(),
-                        &mut changes as *mut XWindowChanges,
-                    );
-                } else {
-                    // We already control you -- sorry, but you don't get to fight with us about position/size.
-                    // But we'll at least pass along the request, so clients don't get confused.
-                    let idx = *maybe_idx.unwrap();
-                    let size = wm.get_inner_size(ItemIdx::Window(idx));
-                    let mut changes = XWindowChanges {
-                        x: 0,
-                        y: 0,
-                        width: size.width
-                            .try_into()
-                            .unwrap(),
-                        height: size.height
-                            .try_into()
-                            .unwrap(),
-                        border_width: 0,
-                        sibling: ev.above,     // no clue
-                        stack_mode: ev.detail, // no clue
-                    };
-                    XConfigureWindow(
-                        display,
-                        ev.window,
-                        ev.value_mask.try_into().unwrap(),
-                        &mut changes as *mut XWindowChanges,
-                    );
+                        let ev2 = XConfigureEvent {
+                            type_: ConfigureNotify,
+                            serial: 0,
+                            send_event: 1,
+                            display,
+                            event: ev.window,
+                            window: ev.window,
+                            x: (position.x + BORDER_WIDTH as usize).try_into().unwrap(),
+                            y: (position.y + BORDER_WIDTH as usize).try_into().unwrap(),
+                            width: size.width.try_into().unwrap(),
+                            height: size.height.try_into().unwrap(),
+                            border_width: 0,
+                            above: 0,
+                            override_redirect: 0, // ??? XXX
+                        };
+                        let mut ev2 = XEvent { configure: ev2 };
+
+                        let status = XSendEvent(
+                            display,
+                            ev.window,
+                            1,
+                            StructureNotifyMask,
+                            &mut ev2 as *mut XEvent,
+                        );
+                        println!("XSendEvent status for synthetic configure: {}", status);
+                    }
                 }
             }
 
@@ -798,7 +810,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 // XGetWindowAttributes(display, window, attributes.as_mut_ptr());
                 // let attributes = attributes.assume_init();
                 // if attributes.class == InputOnly {
-                //     eprintln!("InputOnly window -- not inserting it.");
+                //     println!("InputOnly window -- not inserting it.");
                 //     continue;
                 // }
 
@@ -830,7 +842,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 wm.point = ItemIdx::Window(w_idx);
                                 let frame = wm.make_frame(wm.point);
                                 frames_created.insert(frame);
-                                eprintln!("Reparenting {} into {}", window, frame);
+                                println!("Reparenting {} into {}", window, frame);
                                 XReparentWindow(wm.display, window, frame, 0, 0);
                                 XRaiseWindow(wm.display, window);
                                 actions
@@ -849,7 +861,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                     .client = Some(window);
                                 let frame = wm.make_frame(wm.point);
                                 frames_created.insert(frame);
-                                eprintln!("Reparenting {} into {}", window, frame);
+                                println!("Reparenting {} into {}", window, frame);
                                 XReparentWindow(wm.display, window, frame, 0, 0);
                                 XRaiseWindow(wm.display, window);
                                 XDestroyWindow(wm.display, old_frame);
@@ -898,7 +910,7 @@ unsafe extern "C" fn navigate(state: SCM, dir: SCM) -> SCM {
         SpatialDir::Planar(dir) => dir,
         _ => todo!(),
     };
-    eprintln!("dir is {:?}", dir);
+    println!("dir is {:?}", dir);
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     wm.navigate(dir);
     SCM_UNSPECIFIED
@@ -1056,7 +1068,7 @@ unsafe extern "C" fn make_cursor_before(state: SCM, point: SCM) -> SCM {
 
 unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
-    eprintln!("Killing item at {:?}", point);
+    println!("Killing item at {:?}", point);
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     wm.do_and_recompute(|wm| {
         let topo_next = wm.layout.topological_next(wm.point);
@@ -1066,7 +1078,7 @@ unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
         }
         actions
     });
-    eprintln!("Finished do and recompute in kill_item_at");
+    println!("Finished do and recompute in kill_item_at");
     SCM_UNSPECIFIED
 }
 
