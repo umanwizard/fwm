@@ -1,12 +1,12 @@
-(system "xcompmgr&")
-(system "hsetroot -solid \"#ff0000\"")
 (define at-point
   (lambda (f)
     (lambda (wm)
       (f wm (fwm-get-point wm)))))
 
+(system "xmodmap ~/.Xmodmap")
+
 (define bindings
-  (let ([mod "mod1"])
+  (let ([mod "mod3"])
     (list
      (cons (fwm-parse-key-combo (string-append mod "+h")) (lambda (x) (fwm-navigate x '(Planar . Left))))
      (cons (fwm-parse-key-combo (string-append mod "+j")) (lambda (x) (fwm-navigate x '(Planar . Down))))

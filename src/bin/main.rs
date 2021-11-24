@@ -188,7 +188,7 @@ struct ContainerData {
 struct WmState {
     pub client_window_to_item_idx: HashMap<x11::xlib::Window, usize>,
     pub bindings: HashMap<KeyCombo, ProtectedScm>,
-    pub on_point_changed: ProtectedScm,
+//    pub on_point_changed: ProtectedScm,
     pub layout: Layout<WindowData, ContainerData>,
     pub point: ItemIdx,
     pub cursor: Option<MoveCursor>,
@@ -332,14 +332,14 @@ impl WmState {
         display: *mut x11::xlib::Display,
         root: x11::xlib::Window,
         bounds: WindowBounds,
-        on_point_changed: ProtectedScm,
+//        on_point_changed: ProtectedScm,
         // uhh...
         frames_created: &'a mut HashSet<x11::xlib::Window>,
     ) -> Self {
         let mut ret = Self {
             client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
-            on_point_changed,
+//            on_point_changed,
             layout: Layout::new_in_bounds(bounds),
             point: ItemIdx::Container(0),
             cursor: None,
@@ -668,10 +668,10 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"place-new-window\0")),
     );
-    let on_point_changed = ProtectedScm(scm_assq_ref(
-        config,
-        scm_from_utf8_symbol(std::mem::transmute(b"on-point-changed\0"))
-    ));
+    // let on_point_changed = ProtectedScm(scm_assq_ref(
+    //     config,
+    //     scm_from_utf8_symbol(std::mem::transmute(b"on-point-changed\0"))
+    // ));
     let display = XOpenDisplay(null());
     assert!(!display.is_null());
     XSetErrorHandler(Some(x_err));
@@ -703,7 +703,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 height: screen.height.try_into().unwrap(),
             },
         },
-        on_point_changed,
+//        on_point_changed,
         &mut frames_created,
     );
 
