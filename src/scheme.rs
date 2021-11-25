@@ -7,12 +7,14 @@ use std::{
 
 use rust_guile::{
     scm_c_bytevector_length, scm_c_bytevector_ref, scm_c_bytevector_set_x, scm_c_make_bytevector,
-    scm_char_p, scm_from_double, scm_from_int16, scm_from_int32, scm_from_int64, scm_from_int8,
-    scm_from_uint16, scm_from_uint32, scm_from_uint64, scm_from_uint8, scm_from_utf8_stringn,
-    scm_from_utf8_symboln, scm_gc_malloc, scm_integer_to_char, scm_is_bytevector,
-    scm_is_signed_integer, scm_is_unsigned_integer, scm_real_p, scm_symbol_p, scm_symbol_to_string,
-    scm_to_double, scm_to_int64, scm_to_int8, scm_to_uint32, scm_to_uint64, scm_to_utf32_stringn,
-    scm_to_utf8_stringn, SCM, scm_cons, SCM_BOOL_T, SCM_BOOL_F, SCM_EOL, try_scm_decons, try_scm_to_sym, scm_is_truthy, try_scm_to_signed, try_scm_to_unsigned, try_scm_to_double, try_scm_to_char, try_scm_to_string_or_sym, try_scm_to_bytes,
+    scm_char_p, scm_cons, scm_from_double, scm_from_int16, scm_from_int32, scm_from_int64,
+    scm_from_int8, scm_from_uint16, scm_from_uint32, scm_from_uint64, scm_from_uint8,
+    scm_from_utf8_stringn, scm_from_utf8_symboln, scm_gc_malloc, scm_integer_to_char,
+    scm_is_bytevector, scm_is_signed_integer, scm_is_truthy, scm_is_unsigned_integer, scm_real_p,
+    scm_symbol_p, scm_symbol_to_string, scm_to_double, scm_to_int64, scm_to_int8, scm_to_uint32,
+    scm_to_uint64, scm_to_utf32_stringn, scm_to_utf8_stringn, try_scm_decons, try_scm_to_bytes,
+    try_scm_to_char, try_scm_to_double, try_scm_to_signed, try_scm_to_string_or_sym,
+    try_scm_to_sym, try_scm_to_unsigned, SCM, SCM_BOOL_F, SCM_BOOL_T, SCM_EOL,
 };
 use serde::{
     de,

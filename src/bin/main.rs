@@ -10,14 +10,13 @@ use ::fwm::Position;
 use ::fwm::WindowBounds;
 use fwm::ItemAndData;
 use fwm::LayoutDataMut;
+use fwm::LayoutDataRef;
 
 use fwm::scheme::Deserializer;
 use fwm::scheme::Serializer;
 use rand::distributions::{Distribution, Standard};
 use rand::thread_rng;
 use rand::Rng;
-use rust_guile::SCM_EOL;
-use rust_guile::SCM_UNSPECIFIED;
 use rust_guile::scm_apply_1;
 use rust_guile::scm_apply_3;
 use rust_guile::scm_assert_foreign_object_type;
@@ -49,6 +48,8 @@ use rust_guile::scm_with_guile;
 use rust_guile::scm_wrong_type_arg_msg;
 use rust_guile::size_t;
 use rust_guile::SCM;
+use rust_guile::SCM_EOL;
+use rust_guile::SCM_UNSPECIFIED;
 use serde::Deserialize;
 use serde::Serialize;
 use x11::keysym::XK_4;
@@ -68,6 +69,7 @@ use x11::xlib::Mod3Mask;
 use x11::xlib::Mod4Mask;
 use x11::xlib::Mod5Mask;
 use x11::xlib::NoSymbol;
+use x11::xlib::PointerRoot;
 use x11::xlib::RevertToNone;
 use x11::xlib::RevertToPointerRoot;
 use x11::xlib::ShiftMask;
@@ -157,6 +159,7 @@ where
 {
 }
 
+#[derive(Debug)]
 struct ProtectedScm(SCM);
 
 impl ProtectedScm {
@@ -174,10 +177,16 @@ impl Drop for ProtectedScm {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+struct X11ClientWindowData {
+    window: x11::xlib::Window,
+    mapped: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct WindowData {
     // This is optional, to allow holes in the layout
-    client: Option<x11::xlib::Window>,
+    client: Option<X11ClientWindowData>,
     frame: x11::xlib::Window,
     inner_size: AreaSize,
 }
@@ -188,6 +197,7 @@ struct ContainerData {
     inner_size: AreaSize,
 }
 
+#[derive(Debug)]
 struct WmState {
     pub client_window_to_item_idx: HashMap<x11::xlib::Window, usize>,
     pub bindings: HashMap<KeyCombo, ProtectedScm>,
@@ -198,6 +208,7 @@ struct WmState {
 
     pub display: *mut x11::xlib::Display,
     pub root: x11::xlib::Window,
+    pub focused: Option<usize>,
 }
 
 unsafe impl Send for WmState {}
@@ -215,6 +226,44 @@ fn outer_to_inner_size(outer: AreaSize) -> AreaSize {
 }
 
 impl WmState {
+    unsafe fn ensure_focus(&mut self) {
+        let mut did = false;
+        println!("In ensure_focus");
+        if let Some(focused) = self.focused {
+            println!("Focus is some: {}", focused);
+            if let WindowData {
+                client:
+                    Some(X11ClientWindowData {
+                        window,
+                        mapped: true,
+                    }),
+                ..
+            } = self
+                .layout
+                .try_window_data(focused)
+                .expect("WmState::focused should have been cleared when the slot was destroyed.")
+            {
+                println!("Setting input focus for window {:#x}", window);
+                XSetInputFocus(self.display, *window, RevertToPointerRoot, CurrentTime);
+                did = true;
+            } else {
+                println!(
+                    "WD of wrong form to set focus: {:#?}",
+                    self.layout.try_window_data(focused).unwrap()
+                );
+            }
+        }
+        if !did {
+            println!("Unsetting window focus");
+            // XXX - not totally sure whether pointer root is correct here.
+            XSetInputFocus(
+                self.display,
+                PointerRoot.try_into().unwrap(),
+                RevertToPointerRoot,
+                CurrentTime,
+            );
+        }
+    }
     unsafe fn make_frame(&mut self, item: ItemIdx) -> x11::xlib::Window {
         let bounds = self.layout.bounds(item);
         let mut inner_size = outer_to_inner_size(bounds.content);
@@ -272,14 +321,14 @@ impl WmState {
             .try_data(ItemIdx::Window(window_idx))
             .expect("Client should exist here")
             .unwrap_window();
-        let client = client.expect("Client should exist here");
+        let window = client.expect("Window should exist here").window;
         println!(
-            "Resizing client window {} to inner size {:?}",
-            client, inner_size
+            "Resizing client window {:#x} to inner size {:?}",
+            window, inner_size
         );
         XResizeWindow(
             self.display,
-            client,
+            window,
             inner_size.width.try_into().unwrap(),
             inner_size.height.try_into().unwrap(),
         );
@@ -290,7 +339,7 @@ impl WmState {
         let position_in_root = self.layout.bounds(idx).position;
         let frame_window = self.get_frame(idx);
         println!(
-            "Resizing frame window {} to inner size {:?}",
+            "Resizing frame window {:#x} to inner size {:?}",
             frame_window, inner_size
         );
         XMoveResizeWindow(
@@ -312,7 +361,7 @@ impl WmState {
     }
 
     unsafe fn update_point(&mut self, old_point: ItemIdx, new_point: ItemIdx) {
-        eprintln!("Updating point: {:?} to {:?}", old_point, new_point);
+        println!("Updating point: {:?} to {:?}", old_point, new_point);
         if self.layout.exists(old_point) {
             let old_frame = self.get_frame(old_point);
             XSetWindowBorder(self.display, old_frame, BASIC_BORDER_COLOR);
@@ -324,9 +373,14 @@ impl WmState {
         //     self.call_on_point_changed(old_point, new_point)
         // }
         // XXX for now we just hardcode focus
-        if let Some(client) = self.try_get_client(new_point) {
-            XSetInputFocus(self.display, client, RevertToPointerRoot, CurrentTime);
+        if let ItemIdx::Window(w_idx) = new_point {
+            println!("Set desired focused window to {:#x}", w_idx);
+            self.focused = Some(w_idx);
+        } else {
+            println!("Unset desired focused window");
+            self.focused = None;
         }
+        self.ensure_focus();
     }
 }
 
@@ -346,6 +400,7 @@ impl WmState {
             layout: Layout::new_in_bounds(bounds),
             point: ItemIdx::Container(0),
             cursor: None,
+            focused: None,
 
             display,
             root,
@@ -401,9 +456,12 @@ impl WmState {
             }
             LayoutAction::ItemDestroyed { item } => {
                 if let ItemAndData::Window(idx, data) = &item {
+                    if self.focused == Some(*idx) {
+                        self.focused = None;
+                    }
                     if let Some(window) = data.client {
                         unsafe {
-                            self.kill_window(window);
+                            self.kill_window(window.window);
                         }
                     }
                 }
@@ -483,15 +541,9 @@ impl WmState {
             fwm::LayoutDataMut::Container(data) => data.inner_size = inner_size,
         }
     }
-    fn try_get_client(&mut self, idx: ItemIdx) -> Option<u64> {
-        self.layout.try_data(idx).and_then(|data| match data {
-            fwm::LayoutDataRef::Window(w_data) => w_data.client,
-            fwm::LayoutDataRef::Container(_) => None,
-        })
-    }
 }
 
-#[derive(Hash, Eq, PartialEq, Copy, Clone)]
+#[derive(Hash, Eq, PartialEq, Copy, Clone, Debug)]
 struct KeyCombo {
     key_sym: KeySym,
     shift: bool,
@@ -650,13 +702,13 @@ unsafe fn get_foreign_object<'a, T>(obj: SCM, r#type: SCM) -> &'a mut T {
 }
 
 unsafe extern "C" fn x_err(_display: *mut Display, ev: *mut XErrorEvent) -> i32 {
-    eprintln!("X error: {:?}", *ev);
+    println!("X error: {:?}", *ev);
     0
 }
 
 unsafe extern "C" fn x_io_err(_display: *mut Display) -> i32 {
     let e = std::io::Error::last_os_error();
-    eprintln!("X io error (last: {:?})", e);
+    println!("X io error (last: {:?})", e);
     0
 }
 
@@ -689,7 +741,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     assert!(n_screens > 0);
     let screen = XScreenOfDisplay(display, 0);
     let screen = std::ptr::read(screen);
-    eprintln!("screen: {:?}", screen);
 
     // These should not themselves be framed.
     let mut frames_created = HashSet::new();
@@ -831,7 +882,10 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 // but then `make_frame` wouldn't be able to
                                 // rely on getting a Layout-space ItemIdx.
                                 let w_idx = wm.layout.alloc_window(WindowData {
-                                    client: Some(window),
+                                    client: Some(X11ClientWindowData {
+                                        window,
+                                        mapped: false,
+                                    }),
                                     frame: 0,
                                     inner_size: Default::default(),
                                 });
@@ -841,7 +895,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 wm.point = ItemIdx::Window(w_idx);
                                 let frame = wm.make_frame(wm.point);
                                 frames_created.insert(frame);
-                                println!("Reparenting {} into {}", window, frame);
+                                println!("Reparenting {:#x} into {:#x}", window, frame);
                                 XReparentWindow(wm.display, window, frame, 0, 0);
                                 XRaiseWindow(wm.display, window);
                                 actions
@@ -857,10 +911,13 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                     .try_data_mut(wm.point)
                                     .unwrap()
                                     .unwrap_window()
-                                    .client = Some(window);
+                                    .client = Some(X11ClientWindowData {
+                                    window,
+                                    mapped: false,
+                                });
                                 let frame = wm.make_frame(wm.point);
                                 frames_created.insert(frame);
-                                println!("Reparenting {} into {}", window, frame);
+                                println!("Reparenting {:#x} into {:#x}", window, frame);
                                 XReparentWindow(wm.display, window, frame, 0, 0);
                                 XRaiseWindow(wm.display, window);
                                 XDestroyWindow(wm.display, old_frame);
@@ -875,6 +932,33 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     });
                 }
                 XMapWindow(display, window);
+            }
+            x11::xlib::MapNotify => {
+                let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                let ev = e.map;
+                if let Some(&idx) = wm.client_window_to_item_idx.get(&ev.window) {
+                    if let Some(WindowData { client, .. }) = wm.layout.try_window_data_mut(idx) {
+                        let mut client = client
+                            .as_mut()
+                            .expect("Layout out of sync with client_window_to_item_idx");
+                        client.mapped = true;
+                    }
+                }
+                wm.ensure_focus();
+            }
+            x11::xlib::UnmapNotify => {
+                let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                let ev = e.unmap;
+                if let Some(&idx) = wm.client_window_to_item_idx.get(&ev.window) {
+                    if let Some(WindowData {
+                        client: Some(client),
+                        ..
+                    }) = wm.layout.try_window_data_mut(idx)
+                    {
+                        client.mapped = false;
+                    }
+                }
+                wm.ensure_focus();
             }
             x11::xlib::DestroyNotify => {
                 let XDestroyWindowEvent { window, .. } = e.destroy_window;
@@ -1089,7 +1173,7 @@ unsafe extern "C" fn kill_client_at(state: SCM, point: SCM) -> SCM {
             wm.layout.try_data_mut(point)
         {
             if let Some(window) = client.take() {
-                wm.kill_window(window);
+                wm.kill_window(window.window);
             }
         }
         None

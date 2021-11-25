@@ -23,7 +23,7 @@
      (cons (fwm-parse-key-combo (string-append mod "+d")) (lambda (x) (fwm-navigate x 'Child)))
      (cons (fwm-parse-key-combo (string-append mod "+shift+a")) (lambda (x) (fwm-cursor x 'Parent)))
      (cons (fwm-parse-key-combo (string-append mod "+shift+d")) (lambda (x) (fwm-cursor x 'Child)))
-     (cons (fwm-parse-key-combo (string-append mod "+x")) (lambda (x) (quit)))
+     (cons (fwm-parse-key-combo (string-append mod "+shift+period")) (lambda (x) (quit)))
      (cons (fwm-parse-key-combo (string-append mod "+p")) (lambda (x) (let ([layout (fwm-dump-layout x)]) (display layout) (newline)  )))
 					; (cons (fwm-parse-key-combo (string-append mod "+m")) fwm-split-Right)
 					; (cons (fwm-parse-key-combo (string-append mod "+v")) fwm-split-Down)

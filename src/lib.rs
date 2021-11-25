@@ -291,6 +291,22 @@ where
         }
     }
 
+    pub fn try_window_data(&self, w_idx: usize) -> Option<&W> {
+        self.try_window(w_idx).map(|w| &w.data)
+    }
+
+    pub fn try_container_data(&self, c_idx: usize) -> Option<&C> {
+        self.try_container(c_idx).map(|c| &c.data)
+    }
+
+    pub fn try_window_data_mut(&mut self, w_idx: usize) -> Option<&mut W> {
+        self.try_window_mut(w_idx).map(|w| &mut w.data)
+    }
+
+    pub fn try_container_data_mut(&mut self, c_idx: usize) -> Option<&mut C> {
+        self.try_container_mut(c_idx).map(|c| &mut c.data)
+    }
+
     pub fn n_children(&self, item: ItemIdx) -> usize {
         match item {
             ItemIdx::Window(_) => 0,
