@@ -63,11 +63,16 @@
     )
   )
 	   
+(define focus-if-window
+  (lambda (wm point)
+    (when (eq? (car point) 'Window)
+      (fwm-set-focus wm (list (cdr point))))))
 		    
 
 (fwm-run-wm
  (list
   (cons 'bindings  bindings)
   (cons 'place-new-window  place-new-window)
+  (cons 'on-point-changed focus-if-window)
   )
  )

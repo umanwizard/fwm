@@ -18,6 +18,7 @@ use rand::distributions::{Distribution, Standard};
 use rand::thread_rng;
 use rand::Rng;
 use rust_guile::scm_apply_1;
+use rust_guile::scm_apply_2;
 use rust_guile::scm_apply_3;
 use rust_guile::scm_assert_foreign_object_type;
 use rust_guile::scm_assq_ref;
@@ -130,6 +131,7 @@ use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Debug;
 use std::iter::empty;
+use std::marker::PhantomData;
 use std::mem::size_of;
 use std::mem::MaybeUninit;
 use std::os::raw::c_char;
@@ -209,6 +211,7 @@ struct WmState {
     pub display: *mut x11::xlib::Display,
     pub root: x11::xlib::Window,
     pub focused: Option<usize>,
+    pub on_point_changed: ProtectedScm,
 }
 
 unsafe impl Send for WmState {}
@@ -226,6 +229,13 @@ fn outer_to_inner_size(outer: AreaSize) -> AreaSize {
 }
 
 impl WmState {
+    unsafe fn call_on_point_changed(&mut self) {
+        let point = self.point;
+        let point = self.point.serialize(Serializer::default()).expect("XXX");
+        let on_point_changed = self.on_point_changed.0;
+        let scm = make_foreign_object_from_ref(self, WM_STATE_TYPE);
+        scm_apply_2(on_point_changed, scm.inner, point, SCM_EOL);
+    }
     unsafe fn ensure_focus(&mut self) {
         let mut did = false;
         println!("In ensure_focus");
@@ -368,19 +378,9 @@ impl WmState {
         }
         let new_frame = self.get_frame(new_point);
         XSetWindowBorder(self.display, new_frame, POINT_BORDER_COLOR);
-        // XXX - change how passing back self works, so we can let Scheme handle this
-        // if old_point != new_point {
-        //     self.call_on_point_changed(old_point, new_point)
-        // }
-        // XXX for now we just hardcode focus
-        if let ItemIdx::Window(w_idx) = new_point {
-            println!("Set desired focused window to {:#x}", w_idx);
-            self.focused = Some(w_idx);
-        } else {
-            println!("Unset desired focused window");
-            self.focused = None;
+        if old_point != new_point {
+            self.call_on_point_changed();
         }
-        self.ensure_focus();
     }
 }
 
@@ -389,14 +389,14 @@ impl WmState {
         display: *mut x11::xlib::Display,
         root: x11::xlib::Window,
         bounds: WindowBounds,
-        //        on_point_changed: ProtectedScm,
+        on_point_changed: ProtectedScm,
         // uhh...
         frames_created: &'a mut HashSet<x11::xlib::Window>,
     ) -> Self {
         let mut ret = Self {
             client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
-            //            on_point_changed,
+            on_point_changed,
             layout: Layout::new_in_bounds(bounds),
             point: ItemIdx::Container(0),
             cursor: None,
@@ -685,6 +685,22 @@ unsafe extern "C" fn parse_key_combo(code_string: SCM) -> SCM {
     make_foreign_object(combo, b"KeyCombo\0", KEY_COMBO_TYPE)
 }
 
+struct LifetimeScm<'a> {
+    inner: SCM,
+    marker: PhantomData<&'a mut ()>,
+}
+
+unsafe fn make_foreign_object_from_ref<'a, T: Send>(
+    obj: &'a mut T,
+    r#type: SCM,
+) -> LifetimeScm<'a> {
+    let inner = scm_make_foreign_object_1(r#type, (obj as *mut T) as *mut c_void);
+    LifetimeScm {
+        inner,
+        marker: Default::default(),
+    }
+}
+
 unsafe fn make_foreign_object<T: Send>(obj: T, name: &[u8], r#type: SCM) -> SCM {
     let storage = scm_gc_malloc_pointerless(
         size_of::<T>() as u64,
@@ -721,10 +737,10 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"place-new-window\0")),
     );
-    // let on_point_changed = ProtectedScm(scm_assq_ref(
-    //     config,
-    //     scm_from_utf8_symbol(std::mem::transmute(b"on-point-changed\0"))
-    // ));
+    let on_point_changed = ProtectedScm(scm_assq_ref(
+        config,
+        scm_from_utf8_symbol(std::mem::transmute(b"on-point-changed\0"))
+    ));
     let display = XOpenDisplay(null());
     assert!(!display.is_null());
     XSetErrorHandler(Some(x_err));
@@ -755,7 +771,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 height: screen.height.try_into().unwrap(),
             },
         },
-        //        on_point_changed,
+        on_point_changed,
         &mut frames_created,
     );
 
@@ -1237,6 +1253,18 @@ unsafe extern "C" fn dump_layout(state: SCM) -> SCM {
     scm_from_utf8_stringn(std::mem::transmute(s.as_ptr()), s.len() as u64)
 }
 
+unsafe extern "C" fn set_focus(state: SCM, point: SCM) -> SCM {
+    let mut wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let maybe_window: Option<usize> =
+        Deserialize::deserialize(Deserializer { scm: point }).expect("XXX");
+    if let Some(window) = maybe_window {
+        assert!(wm.layout.exists(ItemIdx::Window(window))); // XXX
+    }
+    wm.focused = maybe_window;
+    wm.ensure_focus();
+    SCM_UNSPECIFIED
+}
+
 // TODO - codegen this, as well as translating Scheme objects to Rust objects in the function bodies
 // (similar to what we did in PyTorch)
 unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
@@ -1280,6 +1308,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, kill_client_at as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-dump-layout\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, dump_layout as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-set-focus\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, set_focus as *mut c_void);
 
     std::ptr::null_mut()
 }
