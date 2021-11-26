@@ -114,6 +114,7 @@ use x11::xlib::XSetErrorHandler;
 use x11::xlib::XSetIOErrorHandler;
 use x11::xlib::XSetInputFocus;
 use x11::xlib::XSetWindowAttributes;
+use x11::xlib::XSetWindowBackground;
 use x11::xlib::XSetWindowBorder;
 use x11::xlib::XStringToKeysym;
 use x11::xlib::XSync;
@@ -139,27 +140,11 @@ use std::ptr::null;
 use std::ptr::null_mut;
 use std::rc::Rc;
 
-const POINT_LINE_WIDTH: f64 = 40.0;
-
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-struct Rgb {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-}
-
-impl Distribution<Rgb> for Standard {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Rgb {
-        let (r, g, b) = rng.gen();
-        Rgb { r, g, b }
-    }
-}
-
-fn assert_send<T>()
-where
-    T: Send,
-{
-}
+// fn assert_send<T>()
+// where
+//     T: Send,
+// {
+// }
 
 #[derive(Debug)]
 struct ProtectedScm(SCM);
@@ -183,6 +168,104 @@ impl Drop for ProtectedScm {
 struct X11ClientWindowData {
     window: x11::xlib::Window,
     mapped: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+struct Rgb {
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+impl From<Rgb> for u32 {
+    fn from(x: Rgb) -> Self {
+        ((x.r << 16) as u32) | ((x.g << 8) as u32) | (x.b as u32)
+    }
+}
+
+impl From<Rgb> for u64 {
+    fn from(x: Rgb) -> Self {
+        let x: u32 = x.into();
+        x as u64
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+struct WindowDecorationTemplate {
+    color: Rgb,
+    width: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+struct WindowDecorationsTemplate {
+    left: WindowDecorationTemplate,
+    up: WindowDecorationTemplate,
+    down: WindowDecorationTemplate,
+    right: WindowDecorationTemplate,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct WindowDecorations {
+    left: x11::xlib::Window,
+    up: x11::xlib::Window,
+    down: x11::xlib::Window,
+    right: x11::xlib::Window,
+}
+
+unsafe fn make_decorations_for_frame(
+    frame: x11::xlib::Window,
+    template: &WindowDecorationsTemplate,
+) -> WindowDecorations {
+    todo!()
+}
+
+unsafe fn configure_decorations(
+    d: &WindowDecorations,
+    t: &WindowDecorationsTemplate,
+    frame_bounds: WindowBounds,
+    display: *mut Display,
+) {
+    XMoveResizeWindow(
+        display,
+        d.left,
+        0,
+        0,
+        t.left.width.try_into().unwrap(),
+        frame_bounds.content.height.try_into().unwrap(),
+    );
+    XMoveResizeWindow(
+        display,
+        d.up,
+        0,
+        0,
+        frame_bounds.content.width.try_into().unwrap(),
+        t.up.width.try_into().unwrap(),
+    );
+    XMoveResizeWindow(
+        display,
+        d.down,
+        0,
+        (frame_bounds.content.height - t.down.width)
+            .try_into()
+            .unwrap(),
+        frame_bounds.content.width.try_into().unwrap(),
+        t.down.width.try_into().unwrap(),
+    );
+    XMoveResizeWindow(
+        display,
+        d.right,
+        (frame_bounds.content.width - t.right.width)
+            .try_into()
+            .unwrap(),
+        0,
+        t.down.width.try_into().unwrap(),
+        frame_bounds.content.height.try_into().unwrap(),
+    );
+
+    XSetWindowBackground(display, d.left, t.left.color.into());
+    XSetWindowBackground(display, d.up, t.up.color.into());
+    XSetWindowBackground(display, d.down, t.down.color.into());
+    XSetWindowBackground(display, d.right, t.right.color.into());
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -219,7 +302,7 @@ unsafe impl Send for WmState {}
 const BORDER_WIDTH: u32 = 3;
 const BASIC_BORDER_COLOR: u64 = 0x000000FF;
 const POINT_BORDER_COLOR: u64 = 0x0000FF00;
-const BG_COLOR: u64 = 0xFF000000;
+const BG_COLOR: u64 = 0x00FF00FF;
 
 fn outer_to_inner_size(outer: AreaSize) -> AreaSize {
     AreaSize {
@@ -739,7 +822,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     );
     let on_point_changed = ProtectedScm(scm_assq_ref(
         config,
-        scm_from_utf8_symbol(std::mem::transmute(b"on-point-changed\0"))
+        scm_from_utf8_symbol(std::mem::transmute(b"on-point-changed\0")),
     ));
     let display = XOpenDisplay(null());
     assert!(!display.is_null());
