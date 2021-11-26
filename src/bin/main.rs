@@ -214,9 +214,15 @@ struct WindowDecorations {
 
 unsafe fn make_decorations_for_frame(
     frame: x11::xlib::Window,
-    template: &WindowDecorationsTemplate,
+    display: *mut Display,
 ) -> WindowDecorations {
-    todo!()
+    let left = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
+    let up = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
+    let right = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
+    let down = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
+    WindowDecorations {
+        left, up, down, right
+    }
 }
 
 unsafe fn configure_decorations(
@@ -299,15 +305,14 @@ struct WmState {
 
 unsafe impl Send for WmState {}
 
-const BORDER_WIDTH: u32 = 3;
 const BASIC_BORDER_COLOR: u64 = 0x000000FF;
 const POINT_BORDER_COLOR: u64 = 0x0000FF00;
 const BG_COLOR: u64 = 0x00FF00FF;
 
-fn outer_to_inner_size(outer: AreaSize) -> AreaSize {
+fn outer_to_inner_size(outer: AreaSize, dt: &WindowDecorationsTemplate) -> AreaSize {
     AreaSize {
-        width: outer.width.saturating_sub(BORDER_WIDTH as usize * 2),
-        height: outer.height.saturating_sub(BORDER_WIDTH as usize * 2),
+        width: outer.width.saturating_sub(dt.left.width + dt.right.width),
+        height: outer.height.saturating_sub(dt.up.width + dt.down.width),
     }
 }
 
