@@ -5,6 +5,7 @@
 
 (system "xmodmap ~/.Xmodmap")
 (system "xscreensaver -no-splash&")
+(system "xsetroot -mod 4 10")
 
 (define bindings
   (let ([mod "mod3"])

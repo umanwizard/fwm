@@ -170,7 +170,7 @@ struct X11ClientWindowData {
     mapped: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq)]
 struct Rgb {
     r: u8,
     g: u8,
@@ -179,7 +179,7 @@ struct Rgb {
 
 impl From<Rgb> for u32 {
     fn from(x: Rgb) -> Self {
-        ((x.r << 16) as u32) | ((x.g << 8) as u32) | (x.b as u32)
+        ((x.r as u32) << 16) | ((x.g as u32) << 8) | (x.b as u32)
     }
 }
 
@@ -190,19 +190,49 @@ impl From<Rgb> for u64 {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq)]
 struct WindowDecorationTemplate {
     color: Rgb,
     width: usize,
 }
 
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq)]
 struct WindowDecorationsTemplate {
     left: WindowDecorationTemplate,
     up: WindowDecorationTemplate,
     down: WindowDecorationTemplate,
     right: WindowDecorationTemplate,
 }
+
+impl WindowDecorationsTemplate {
+    pub const fn from_one(one: &WindowDecorationTemplate) -> Self {
+        Self {
+            left: *one,
+            up: *one,
+            down: *one,
+            right: *one,
+        }
+    }
+}
+
+const BASIC_DECO: WindowDecorationsTemplate =
+    WindowDecorationsTemplate::from_one(&WindowDecorationTemplate {
+        color: Rgb {
+            r: 0,
+            g: 0,
+            b: 0xFF,
+        },
+        width: 3,
+    });
+const POINT_DECO: WindowDecorationsTemplate =
+    WindowDecorationsTemplate::from_one(&WindowDecorationTemplate {
+        color: Rgb {
+            r: 0,
+            g: 0xFF,
+            b: 0,
+        },
+        width: 3,
+    });
 
 #[derive(Serialize, Deserialize, Debug)]
 struct WindowDecorations {
@@ -213,23 +243,30 @@ struct WindowDecorations {
 }
 
 unsafe fn make_decorations_for_frame(
-    frame: x11::xlib::Window,
     display: *mut Display,
+    frame: x11::xlib::Window,
 ) -> WindowDecorations {
     let left = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
     let up = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
     let right = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
     let down = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
+    XMapWindow(display, left);
+    XMapWindow(display, up);
+    XMapWindow(display, right);
+    XMapWindow(display, down);
     WindowDecorations {
-        left, up, down, right
+        left,
+        up,
+        down,
+        right,
     }
 }
 
 unsafe fn configure_decorations(
+    display: *mut Display,
+    frame_size: AreaSize,
     d: &WindowDecorations,
     t: &WindowDecorationsTemplate,
-    frame_bounds: WindowBounds,
-    display: *mut Display,
 ) {
     XMoveResizeWindow(
         display,
@@ -237,35 +274,31 @@ unsafe fn configure_decorations(
         0,
         0,
         t.left.width.try_into().unwrap(),
-        frame_bounds.content.height.try_into().unwrap(),
+        frame_size.height.try_into().unwrap(),
     );
     XMoveResizeWindow(
         display,
         d.up,
         0,
         0,
-        frame_bounds.content.width.try_into().unwrap(),
+        frame_size.width.try_into().unwrap(),
         t.up.width.try_into().unwrap(),
     );
     XMoveResizeWindow(
         display,
         d.down,
         0,
-        (frame_bounds.content.height - t.down.width)
-            .try_into()
-            .unwrap(),
-        frame_bounds.content.width.try_into().unwrap(),
+        (frame_size.height - t.down.width).try_into().unwrap(),
+        frame_size.width.try_into().unwrap(),
         t.down.width.try_into().unwrap(),
     );
     XMoveResizeWindow(
         display,
         d.right,
-        (frame_bounds.content.width - t.right.width)
-            .try_into()
-            .unwrap(),
+        (frame_size.width - t.right.width).try_into().unwrap(),
         0,
         t.down.width.try_into().unwrap(),
-        frame_bounds.content.height.try_into().unwrap(),
+        frame_size.height.try_into().unwrap(),
     );
 
     XSetWindowBackground(display, d.left, t.left.color.into());
@@ -279,12 +312,13 @@ struct WindowData {
     // This is optional, to allow holes in the layout
     client: Option<X11ClientWindowData>,
     frame: x11::xlib::Window,
+    decorations: WindowDecorations,
+    template: WindowDecorationsTemplate,
     inner_size: AreaSize,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug)]
 struct ContainerData {
-    frame: x11::xlib::Window,
     inner_size: AreaSize,
 }
 
@@ -305,8 +339,6 @@ struct WmState {
 
 unsafe impl Send for WmState {}
 
-const BASIC_BORDER_COLOR: u64 = 0x000000FF;
-const POINT_BORDER_COLOR: u64 = 0x0000FF00;
 const BG_COLOR: u64 = 0x00FF00FF;
 
 fn outer_to_inner_size(outer: AreaSize, dt: &WindowDecorationsTemplate) -> AreaSize {
@@ -318,7 +350,6 @@ fn outer_to_inner_size(outer: AreaSize, dt: &WindowDecorationsTemplate) -> AreaS
 
 impl WmState {
     unsafe fn call_on_point_changed(&mut self) {
-        let point = self.point;
         let point = self.point.serialize(Serializer::default()).expect("XXX");
         let on_point_changed = self.on_point_changed.0;
         let scm = make_foreign_object_from_ref(self, WM_STATE_TYPE);
@@ -326,9 +357,7 @@ impl WmState {
     }
     unsafe fn ensure_focus(&mut self) {
         let mut did = false;
-        println!("In ensure_focus");
         if let Some(focused) = self.focused {
-            println!("Focus is some: {}", focused);
             if let WindowData {
                 client:
                     Some(X11ClientWindowData {
@@ -341,18 +370,11 @@ impl WmState {
                 .try_window_data(focused)
                 .expect("WmState::focused should have been cleared when the slot was destroyed.")
             {
-                println!("Setting input focus for window {:#x}", window);
                 XSetInputFocus(self.display, *window, RevertToPointerRoot, CurrentTime);
                 did = true;
-            } else {
-                println!(
-                    "WD of wrong form to set focus: {:#?}",
-                    self.layout.try_window_data(focused).unwrap()
-                );
             }
         }
         if !did {
-            println!("Unsetting window focus");
             // XXX - not totally sure whether pointer root is correct here.
             XSetInputFocus(
                 self.display,
@@ -362,26 +384,8 @@ impl WmState {
             );
         }
     }
-    unsafe fn make_frame(&mut self, item: ItemIdx) -> x11::xlib::Window {
-        let bounds = self.layout.bounds(item);
-        let mut inner_size = outer_to_inner_size(bounds.content);
-        for bound in &mut [&mut inner_size.width, &mut inner_size.height] {
-            if **bound == 0 {
-                **bound = 1;
-            }
-        }
-
-        let frame = XCreateSimpleWindow(
-            self.display,
-            self.root,
-            bounds.position.x.try_into().unwrap(),
-            bounds.position.y.try_into().unwrap(),
-            inner_size.width.try_into().unwrap(),
-            inner_size.height.try_into().unwrap(),
-            BORDER_WIDTH,
-            BASIC_BORDER_COLOR,
-            BG_COLOR,
-        );
+    unsafe fn make_frame(&mut self) -> x11::xlib::Window {
+        let frame = XCreateSimpleWindow(self.display, self.root, 0, 0, 1, 1, 0, 0, BG_COLOR);
         XSelectInput(
             self.display,
             frame,
@@ -389,15 +393,6 @@ impl WmState {
         );
 
         XMapWindow(self.display, frame);
-
-        let old = self.get_frame(item);
-        assert!(
-            old == 0,
-            "Attempted to create frame for the same element twice"
-        );
-        self.set_frame(item, frame);
-        self.set_inner_size(item, inner_size);
-
         frame
     }
 
@@ -409,11 +404,13 @@ impl WmState {
         XDestroyWindow(self.display, window);
     }
 
-    unsafe fn update_client_bounds(&mut self, window_idx: usize) {
+    unsafe fn update_window_bounds(&mut self, window_idx: usize) {
         let WindowData {
             client,
             frame,
             inner_size,
+            template,
+            decorations,
         } = self
             .layout
             .try_data(ItemIdx::Window(window_idx))
@@ -424,30 +421,28 @@ impl WmState {
             "Resizing client window {:#x} to inner size {:?}",
             window, inner_size
         );
-        XResizeWindow(
+        XMoveResizeWindow(
             self.display,
             window,
+            template.left.width.try_into().unwrap(),
+            template.up.width.try_into().unwrap(),
             inner_size.width.try_into().unwrap(),
             inner_size.height.try_into().unwrap(),
         );
-    }
-
-    unsafe fn update_frame_bounds(&mut self, idx: ItemIdx) {
-        let inner_size = self.get_inner_size(idx);
-        let position_in_root = self.layout.bounds(idx).position;
-        let frame_window = self.get_frame(idx);
+        let frame_bounds = self.layout.bounds(ItemIdx::Window(window_idx));
         println!(
-            "Resizing frame window {:#x} to inner size {:?}",
-            frame_window, inner_size
+            "Moving and resizing frame window {:#x} to bounds {:?}",
+            frame, frame_bounds
         );
         XMoveResizeWindow(
             self.display,
-            frame_window,
-            position_in_root.x.try_into().unwrap(),
-            position_in_root.y.try_into().unwrap(),
-            inner_size.width.try_into().unwrap(),
-            inner_size.height.try_into().unwrap(),
+            *frame,
+            frame_bounds.position.x.try_into().unwrap(),
+            frame_bounds.position.y.try_into().unwrap(),
+            frame_bounds.content.width.try_into().unwrap(),
+            frame_bounds.content.height.try_into().unwrap(),
         );
+        configure_decorations(self.display, frame_bounds.content, &decorations, &template);
     }
 
     unsafe fn update_cursor(
@@ -460,15 +455,49 @@ impl WmState {
 
     unsafe fn update_point(&mut self, old_point: ItemIdx, new_point: ItemIdx) {
         println!("Updating point: {:?} to {:?}", old_point, new_point);
-        if self.layout.exists(old_point) {
-            let old_frame = self.get_frame(old_point);
-            XSetWindowBorder(self.display, old_frame, BASIC_BORDER_COLOR);
+
+        if let ItemIdx::Window(old_w_idx) = old_point {
+            let bounds = self.layout.bounds(old_point);
+            if let Some(data) = self.layout.try_window_data_mut(old_w_idx) {
+                println!("Data template is {:?}, setting to BASIC_DECO", data.template);
+                if data.template != BASIC_DECO {
+                    data.template = BASIC_DECO;
+                    configure_decorations(
+                        self.display,
+                        bounds.content,
+                        &data.decorations,
+                        &data.template,
+                    );
+                }
+            }
         }
-        let new_frame = self.get_frame(new_point);
-        XSetWindowBorder(self.display, new_frame, POINT_BORDER_COLOR);
+
+        if let ItemIdx::Window(new_w_idx) = new_point {
+            let bounds = self.layout.bounds(new_point);
+            let data = self.layout.try_window_data_mut(new_w_idx).unwrap();
+            println!("Data template is {:?}, setting to POINT_DECO", data.template);
+            if data.template != POINT_DECO {
+                data.template = POINT_DECO;
+                configure_decorations(
+                    self.display,
+                    bounds.content,
+                    &data.decorations,
+                    &data.template,
+                );
+            }
+        }
+
         if old_point != new_point {
             self.call_on_point_changed();
         }
+    }
+
+    pub fn get_frame(&self, w_idx: usize) -> x11::xlib::Window {
+        self.layout.try_window_data(w_idx).unwrap().frame
+    }
+    pub fn set_frame(&mut self, w_idx: usize, frame: x11::xlib::Window) {
+        let pd = self.layout.try_window_data_mut(w_idx).unwrap();
+        pd.frame = frame;
     }
 }
 
@@ -494,8 +523,8 @@ impl WmState {
             root,
         };
         unsafe {
-            let frame = ret.make_frame(ItemIdx::Container(0));
-            frames_created.insert(frame);
+            // let frame = ret.make_frame(ItemIdx::Container(0));
+            // frames_created.insert(frame);
         }
         ret
     }
@@ -524,11 +553,14 @@ impl WmState {
     pub fn update_for_action(&mut self, action: LayoutAction<WindowData, ContainerData>) {
         match action {
             LayoutAction::NewBounds { idx, bounds } => {
-                let inner_size = outer_to_inner_size(bounds.content);
+                let inner_size = match idx {
+                    ItemIdx::Window(w_idx) => {
+                        let data = self.layout.try_window_data(w_idx).unwrap();
+                        outer_to_inner_size(bounds.content, &data.template)
+                    }
+                    ItemIdx::Container(c_idx) => bounds.content,
+                };
                 self.set_inner_size(idx, inner_size);
-                unsafe {
-                    self.update_frame_bounds(idx);
-                }
                 if let ItemIdx::Window(w_idx) = idx {
                     if self
                         .layout
@@ -537,7 +569,7 @@ impl WmState {
                         .unwrap_or(false)
                     {
                         unsafe {
-                            self.update_client_bounds(w_idx);
+                            self.update_window_bounds(w_idx);
                         }
                     }
                 }
@@ -553,13 +585,10 @@ impl WmState {
                         }
                     }
                 }
-                let frame = match item {
-                    ItemAndData::Window(_, data) => data.frame,
-                    ItemAndData::Container(_, data) => data.frame,
+                match item {
+                    ItemAndData::Window(_, data) => unsafe { self.kill_window(data.frame) },
+                    ItemAndData::Container(_, _) => {}
                 };
-                unsafe {
-                    self.kill_window(frame);
-                }
             }
             LayoutAction::ItemHidden { idx: _ } => unimplemented!(),
         }
@@ -604,18 +633,6 @@ impl WmState {
             wm.cursor = (new_cursor != wm.layout.cursor_before(wm.point)).then(|| new_cursor);
             None
         });
-    }
-    fn get_frame(&self, idx: ItemIdx) -> x11::xlib::Window {
-        match self.layout.try_data(idx).unwrap() {
-            fwm::LayoutDataRef::Window(data) => data.frame,
-            fwm::LayoutDataRef::Container(data) => data.frame,
-        }
-    }
-    fn set_frame(&mut self, idx: ItemIdx, frame: x11::xlib::Window) {
-        match self.layout.try_data_mut(idx).unwrap() {
-            fwm::LayoutDataMut::Window(data) => data.frame = frame,
-            fwm::LayoutDataMut::Container(data) => data.frame = frame,
-        }
     }
     fn get_inner_size(&self, idx: ItemIdx) -> AreaSize {
         match self.layout.try_data(idx).unwrap() {
@@ -918,12 +935,12 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     Some(w_idx) => {
                         // We already control you -- sorry, but you don't get to fight with us about position/size.
                         // Notify you of your real coordinates.
+                        let data = wm.layout.try_window_data(w_idx).unwrap();
                         let idx = ItemIdx::Window(w_idx);
                         let WindowBounds {
                             content: _,
                             position,
                         } = wm.layout.bounds(idx);
-                        let size = wm.get_inner_size(idx);
 
                         let ev2 = XConfigureEvent {
                             type_: ConfigureNotify,
@@ -932,10 +949,10 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             display,
                             event: ev.window,
                             window: ev.window,
-                            x: (position.x + BORDER_WIDTH as usize).try_into().unwrap(),
-                            y: (position.y + BORDER_WIDTH as usize).try_into().unwrap(),
-                            width: size.width.try_into().unwrap(),
-                            height: size.height.try_into().unwrap(),
+                            x: (position.x + data.template.left.width).try_into().unwrap(),
+                            y: (position.y + data.template.up.width).try_into().unwrap(),
+                            width: data.inner_size.width.try_into().unwrap(),
+                            height: data.inner_size.height.try_into().unwrap(),
                             border_width: 0,
                             above: 0,
                             override_redirect: 0, // ??? XXX
@@ -976,63 +993,57 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     let insert_cursor =
                         MoveOrReplace::deserialize(Deserializer { scm: insert_cursor })
                             .expect("XXX");
-                    wm.do_and_recompute(|wm| {
-                        match insert_cursor {
-                            MoveOrReplace::Move(insert_cursor) => {
-                                // TODO refactor this --
-                                // `make_frame` is doing too much.
-                                // We should call `make_frame` to do all the x11-specific stuff,
-                                // and then have a frame to fill in here,
-                                // but then `make_frame` wouldn't be able to
-                                // rely on getting a Layout-space ItemIdx.
-                                let w_idx = wm.layout.alloc_window(WindowData {
-                                    client: Some(X11ClientWindowData {
-                                        window,
-                                        mapped: false,
-                                    }),
-                                    frame: 0,
-                                    inner_size: Default::default(),
-                                });
-                                wm.client_window_to_item_idx.insert(window, w_idx);
-                                let actions =
-                                    wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
-                                wm.point = ItemIdx::Window(w_idx);
-                                let frame = wm.make_frame(wm.point);
-                                frames_created.insert(frame);
-                                println!("Reparenting {:#x} into {:#x}", window, frame);
-                                XReparentWindow(wm.display, window, frame, 0, 0);
-                                XRaiseWindow(wm.display, window);
-                                actions
-                            }
-                            MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
-                                let old_frame = wm.get_frame(ItemIdx::Window(w_idx));
-                                let old_bounds = wm.layout.bounds(ItemIdx::Window(w_idx));
-
-                                wm.client_window_to_item_idx.insert(window, w_idx);
-                                wm.point = ItemIdx::Window(w_idx);
-                                wm.set_frame(wm.point, 0);
-                                wm.layout
-                                    .try_data_mut(wm.point)
-                                    .unwrap()
-                                    .unwrap_window()
-                                    .client = Some(X11ClientWindowData {
+                    wm.do_and_recompute(|wm| match insert_cursor {
+                        MoveOrReplace::Move(insert_cursor) => {
+                            let frame = wm.make_frame();
+                            let decorations = make_decorations_for_frame(display, frame);
+                            let w_idx = wm.layout.alloc_window(WindowData {
+                                client: Some(X11ClientWindowData {
                                     window,
                                     mapped: false,
-                                });
-                                let frame = wm.make_frame(wm.point);
-                                frames_created.insert(frame);
-                                println!("Reparenting {:#x} into {:#x}", window, frame);
-                                XReparentWindow(wm.display, window, frame, 0, 0);
-                                XRaiseWindow(wm.display, window);
-                                XDestroyWindow(wm.display, old_frame);
-                                frames_created.remove(&old_frame);
-                                vec![LayoutAction::NewBounds {
-                                    idx: wm.point,
-                                    bounds: old_bounds,
-                                }]
-                            }
-                            MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!(),
+                                }),
+                                frame,
+                                inner_size: Default::default(),
+                                decorations,
+                                template: BASIC_DECO,
+                            });
+                            wm.client_window_to_item_idx.insert(window, w_idx);
+                            let actions = wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
+                            wm.point = ItemIdx::Window(w_idx);
+                            frames_created.insert(frame);
+                            println!("Reparenting {:#x} into {:#x}", window, frame);
+                            XReparentWindow(wm.display, window, frame, 0, 0);
+                            XRaiseWindow(wm.display, window);
+                            actions
                         }
+                        MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
+                            let old_frame = wm.get_frame(w_idx);
+                            let old_bounds = wm.layout.bounds(ItemIdx::Window(w_idx));
+
+                            wm.client_window_to_item_idx.insert(window, w_idx);
+                            wm.point = ItemIdx::Window(w_idx);
+                            wm.set_frame(w_idx, 0);
+                            wm.layout
+                                .try_data_mut(wm.point)
+                                .unwrap()
+                                .unwrap_window()
+                                .client = Some(X11ClientWindowData {
+                                window,
+                                mapped: false,
+                            });
+                            let frame = wm.make_frame();
+                            frames_created.insert(frame);
+                            println!("Reparenting {:#x} into {:#x}", window, frame);
+                            XReparentWindow(wm.display, window, frame, 0, 0);
+                            XRaiseWindow(wm.display, window);
+                            XDestroyWindow(wm.display, old_frame);
+                            frames_created.remove(&old_frame);
+                            vec![LayoutAction::NewBounds {
+                                idx: wm.point,
+                                bounds: old_bounds,
+                            }]
+                        }
+                        MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!(),
                     });
                 }
                 XMapWindow(display, window);
@@ -1157,9 +1168,8 @@ unsafe extern "C" fn is_occupied(state: SCM, point: SCM) -> SCM {
         ItemIdx::Container(_) => true, // Containers always count as occupied, since their frame is their entire content.
         ItemIdx::Window(w_idx) => wm
             .layout
-            .try_data(point)
+            .try_window_data(w_idx)
             .expect("XXX")
-            .unwrap_window()
             .client
             .is_some(),
     })
