@@ -248,14 +248,11 @@ struct WindowDecorations {
     right: x11::xlib::Window,
 }
 
-unsafe fn make_decorations_for_frame(
-    display: *mut Display,
-    frame: x11::xlib::Window,
-) -> WindowDecorations {
-    let left = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
-    let up = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
-    let right = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
-    let down = XCreateSimpleWindow(display, frame, 0, 0, 1, 1, 0, 0, 0);
+unsafe fn make_decorations(display: *mut Display, root: x11::xlib::Window) -> WindowDecorations {
+    let left = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
+    let up = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
+    let right = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
+    let down = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
     XMapWindow(display, left);
     XMapWindow(display, up);
     XMapWindow(display, right);
@@ -270,41 +267,45 @@ unsafe fn make_decorations_for_frame(
 
 unsafe fn configure_decorations(
     display: *mut Display,
-    frame_size: AreaSize,
+    bounds: WindowBounds,
     d: &WindowDecorations,
     t: &WindowDecorationsTemplate,
 ) {
     XMoveResizeWindow(
         display,
         d.left,
-        0,
-        0,
+        bounds.position.x.try_into().unwrap(),
+        bounds.position.y.try_into().unwrap(),
         t.left.width.try_into().unwrap(),
-        frame_size.height.try_into().unwrap(),
+        bounds.content.height.try_into().unwrap(),
     );
     XMoveResizeWindow(
         display,
         d.up,
-        0,
-        0,
-        frame_size.width.try_into().unwrap(),
+        bounds.position.x.try_into().unwrap(),
+        bounds.position.y.try_into().unwrap(),
+        bounds.content.width.try_into().unwrap(),
         t.up.width.try_into().unwrap(),
     );
     XMoveResizeWindow(
         display,
         d.down,
-        0,
-        (frame_size.height - t.down.width).try_into().unwrap(),
-        frame_size.width.try_into().unwrap(),
+        bounds.position.x.try_into().unwrap(),
+        (bounds.position.y + bounds.content.height - t.down.width)
+            .try_into()
+            .unwrap(),
+        bounds.content.width.try_into().unwrap(),
         t.down.width.try_into().unwrap(),
     );
     XMoveResizeWindow(
         display,
         d.right,
-        (frame_size.width - t.right.width).try_into().unwrap(),
-        0,
+        (bounds.position.x + bounds.content.width - t.right.width)
+            .try_into()
+            .unwrap(),
+        bounds.position.y.try_into().unwrap(),
         t.down.width.try_into().unwrap(),
-        frame_size.height.try_into().unwrap(),
+        bounds.content.height.try_into().unwrap(),
     );
 
     XSetWindowBackground(display, d.left, t.left.color.into());
@@ -321,7 +322,6 @@ unsafe fn configure_decorations(
 struct WindowData {
     // This is optional, to allow holes in the layout
     client: Option<X11ClientWindowData>,
-    frame: x11::xlib::Window,
     decorations: WindowDecorations,
     template: WindowDecorationsTemplate,
     inner_size: AreaSize,
@@ -394,17 +394,6 @@ impl WmState {
             );
         }
     }
-    unsafe fn make_frame(&mut self) -> x11::xlib::Window {
-        let frame = XCreateSimpleWindow(self.display, self.root, 0, 0, 1, 1, 0, 0, BG_COLOR);
-        XSelectInput(
-            self.display,
-            frame,
-            SubstructureRedirectMask | SubstructureNotifyMask,
-        );
-
-        XMapWindow(self.display, frame);
-        frame
-    }
 
     unsafe fn kill_window(&mut self, window: x11::xlib::Window) {
         // TODO - gracefully kill the window - we will need to design a protocol
@@ -417,7 +406,6 @@ impl WmState {
     unsafe fn update_window_bounds(&mut self, window_idx: usize) {
         let WindowData {
             client,
-            frame,
             inner_size,
             template,
             decorations,
@@ -431,13 +419,16 @@ impl WmState {
             "Resizing client window {:#x} to inner size {:?}",
             window, inner_size
         );
+        let bounds = self.layout.bounds(ItemIdx::Window(window_idx));
         // We use XConfigureWindow here, rather than just XMoveResizeWindow,
         // to allow us to set the border width back to 0 in case the client changed
         // it before mapping (XTerm does this, for example)
         let value_mask = CWX | CWY | CWWidth | CWHeight | CWBorderWidth;
         let mut changes = XWindowChanges {
-            x: template.left.width.try_into().unwrap(),
-            y: template.up.width.try_into().unwrap(),
+            x: (bounds.position.x + template.left.width)
+                .try_into()
+                .unwrap(),
+            y: (bounds.position.y + template.up.width).try_into().unwrap(),
             width: inner_size.width.try_into().unwrap(),
             height: inner_size.height.try_into().unwrap(),
             border_width: 0,
@@ -451,20 +442,7 @@ impl WmState {
             value_mask.into(),
             (&mut changes) as *mut XWindowChanges,
         );
-        let frame_bounds = self.layout.bounds(ItemIdx::Window(window_idx));
-        println!(
-            "Moving and resizing frame window {:#x} to bounds {:?}",
-            frame, frame_bounds
-        );
-        XMoveResizeWindow(
-            self.display,
-            *frame,
-            frame_bounds.position.x.try_into().unwrap(),
-            frame_bounds.position.y.try_into().unwrap(),
-            frame_bounds.content.width.try_into().unwrap(),
-            frame_bounds.content.height.try_into().unwrap(),
-        );
-        configure_decorations(self.display, frame_bounds.content, &decorations, &template);
+        configure_decorations(self.display, bounds, &decorations, &template);
     }
 
     unsafe fn update_cursor(
@@ -488,12 +466,7 @@ impl WmState {
                 );
                 if data.template != BASIC_DECO {
                     data.template = BASIC_DECO;
-                    configure_decorations(
-                        self.display,
-                        bounds.content,
-                        &data.decorations,
-                        &data.template,
-                    );
+                    configure_decorations(self.display, bounds, &data.decorations, &data.template);
                 }
             }
         }
@@ -507,12 +480,7 @@ impl WmState {
             );
             if data.template != POINT_DECO {
                 data.template = POINT_DECO;
-                configure_decorations(
-                    self.display,
-                    bounds.content,
-                    &data.decorations,
-                    &data.template,
-                );
+                configure_decorations(self.display, bounds, &data.decorations, &data.template);
             }
         }
 
@@ -520,18 +488,8 @@ impl WmState {
             self.call_on_point_changed();
         }
     }
-
-    pub fn get_frame(&self, w_idx: usize) -> x11::xlib::Window {
-        self.layout.try_window_data(w_idx).unwrap().frame
-    }
-    pub fn set_frame_and_decorations(
-        &mut self,
-        w_idx: usize,
-        frame: x11::xlib::Window,
-        decorations: WindowDecorations,
-    ) {
+    pub fn set_decorations(&mut self, w_idx: usize, decorations: WindowDecorations) {
         let pd = self.layout.try_window_data_mut(w_idx).unwrap();
-        pd.frame = frame;
         pd.decorations = decorations;
     }
 }
@@ -542,8 +500,6 @@ impl WmState {
         root: x11::xlib::Window,
         bounds: WindowBounds,
         on_point_changed: ProtectedScm,
-        // uhh...
-        frames_created: &'a mut HashSet<x11::xlib::Window>,
     ) -> Self {
         let mut ret = Self {
             client_window_to_item_idx: Default::default(),
@@ -557,10 +513,6 @@ impl WmState {
             display,
             root,
         };
-        unsafe {
-            // let frame = ret.make_frame(ItemIdx::Container(0));
-            // frames_created.insert(frame);
-        }
         ret
     }
     pub fn do_and_recompute<I, F>(&mut self, closure: F)
@@ -621,7 +573,15 @@ impl WmState {
                     }
                 }
                 match item {
-                    ItemAndData::Window(_, data) => unsafe { self.kill_window(data.frame) },
+                    ItemAndData::Window(_, data) => unsafe {
+                        if let Some(client) = data.client {
+                            self.kill_window(client.window);
+                        }
+                        self.kill_window(data.decorations.down);
+                        self.kill_window(data.decorations.up);
+                        self.kill_window(data.decorations.right);
+                        self.kill_window(data.decorations.left);
+                    },
                     ItemAndData::Container(_, _) => {}
                 };
             }
@@ -898,9 +858,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     let screen = XScreenOfDisplay(display, 0);
     let screen = std::ptr::read(screen);
 
-    // These should not themselves be framed.
-    let mut frames_created = HashSet::new();
-
     let wm = WmState::new(
         display,
         root,
@@ -912,7 +869,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
             },
         },
         on_point_changed,
-        &mut frames_created,
     );
 
     let wm_scm = make_foreign_object(wm, b"WmState\0", WM_STATE_TYPE);
@@ -1008,10 +964,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
 
             x11::xlib::MapRequest => {
                 let XMapRequestEvent { window, .. } = e.map_request;
-                if frames_created.contains(&window) || window == root {
-                    // This prevents creating nested frames in an infinite loop.
-                    continue;
-                }
                 // let mut attributes = MaybeUninit::<XWindowAttributes>::uninit();
                 // XGetWindowAttributes(display, window, attributes.as_mut_ptr());
                 // let attributes = attributes.assume_init();
@@ -1030,14 +982,12 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             .expect("XXX");
                     wm.do_and_recompute(|wm| match insert_cursor {
                         MoveOrReplace::Move(insert_cursor) => {
-                            let frame = wm.make_frame();
-                            let decorations = make_decorations_for_frame(display, frame);
+                            let decorations = make_decorations(display, root);
                             let w_idx = wm.layout.alloc_window(WindowData {
                                 client: Some(X11ClientWindowData {
                                     window,
                                     mapped: false,
                                 }),
-                                frame,
                                 inner_size: Default::default(),
                                 decorations,
                                 template: BASIC_DECO,
@@ -1045,35 +995,30 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             wm.client_window_to_item_idx.insert(window, w_idx);
                             let actions = wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
                             wm.point = ItemIdx::Window(w_idx);
-                            frames_created.insert(frame);
-                            println!("Reparenting {:#x} into {:#x}", window, frame);
-                            XReparentWindow(wm.display, window, frame, 0, 0);
                             XRaiseWindow(wm.display, window);
                             actions
                         }
                         MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
-                            let old_frame = wm.get_frame(w_idx);
                             let old_bounds = wm.layout.bounds(ItemIdx::Window(w_idx));
 
                             wm.client_window_to_item_idx.insert(window, w_idx);
                             wm.point = ItemIdx::Window(w_idx);
-                            wm.layout
-                                .try_data_mut(wm.point)
-                                .unwrap()
-                                .unwrap_window()
-                                .client = Some(X11ClientWindowData {
-                                window,
-                                mapped: false,
-                            });
-                            let frame = wm.make_frame();
-                            let decorations = make_decorations_for_frame(display, frame);
-                            wm.set_frame_and_decorations(w_idx, frame, decorations);
-                            frames_created.insert(frame);
-                            println!("Reparenting {:#x} into {:#x}", window, frame);
-                            XReparentWindow(wm.display, window, frame, 0, 0);
+                            let old_client = std::mem::replace(
+                                &mut wm
+                                    .layout
+                                    .try_data_mut(wm.point)
+                                    .unwrap()
+                                    .unwrap_window()
+                                    .client,
+                                Some(X11ClientWindowData {
+                                    window,
+                                    mapped: false,
+                                }),
+                            );
                             XRaiseWindow(wm.display, window);
-                            XDestroyWindow(wm.display, old_frame);
-                            frames_created.remove(&old_frame);
+                            if let Some(X11ClientWindowData { window, mapped: _ }) = old_client {
+                                XDestroyWindow(wm.display, window);
+                            }
                             vec![LayoutAction::NewBounds {
                                 idx: wm.point,
                                 bounds: old_bounds,
