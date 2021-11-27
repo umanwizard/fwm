@@ -507,9 +507,15 @@ impl WmState {
     pub fn get_frame(&self, w_idx: usize) -> x11::xlib::Window {
         self.layout.try_window_data(w_idx).unwrap().frame
     }
-    pub fn set_frame(&mut self, w_idx: usize, frame: x11::xlib::Window) {
+    pub fn set_frame_and_decorations(
+        &mut self,
+        w_idx: usize,
+        frame: x11::xlib::Window,
+        decorations: WindowDecorations,
+    ) {
         let pd = self.layout.try_window_data_mut(w_idx).unwrap();
         pd.frame = frame;
+        pd.decorations = decorations;
     }
 }
 
@@ -1034,7 +1040,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
 
                             wm.client_window_to_item_idx.insert(window, w_idx);
                             wm.point = ItemIdx::Window(w_idx);
-                            wm.set_frame(w_idx, 0);
                             wm.layout
                                 .try_data_mut(wm.point)
                                 .unwrap()
@@ -1044,6 +1049,8 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 mapped: false,
                             });
                             let frame = wm.make_frame();
+                            let decorations = make_decorations_for_frame(display, frame);
+                            wm.set_frame_and_decorations(w_idx, frame, decorations);
                             frames_created.insert(frame);
                             println!("Reparenting {:#x} into {:#x}", window, frame);
                             XReparentWindow(wm.display, window, frame, 0, 0);

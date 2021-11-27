@@ -3,8 +3,13 @@
     (lambda (wm)
       (f wm (fwm-get-point wm)))))
 
+(define terminal "sakura")
+(define exec
+  (lambda (cmd)
+    (system (string-append cmd "&"))))
+
 (system "xmodmap ~/.Xmodmap")
-(system "xscreensaver -no-splash&")
+(exec "xscreensaver -no-splash&")
 (system "xsetroot -mod 4 10")
 
 (define bindings
@@ -40,9 +45,9 @@
 					;        )
 					;        (cons (fwm-parse-key-combo (string-append mod "+g")) fwm-move)
 					;        (cons (fwm-parse-key-combo (string-append mod "+G")) fwm-cursor-to-point)
-     (cons (fwm-parse-key-combo (string-append mod "+Return")) (lambda (x) (system "xterm&")))
-     (cons (fwm-parse-key-combo (string-append mod "+e")) (lambda (x) (system "rofi -show run&")))
-     (cons (fwm-parse-key-combo (string-append mod "+q")) (lambda (x) (system "xscreensaver-command -lock&")))
+     (cons (fwm-parse-key-combo (string-append mod "+Return")) (lambda (x) (exec terminal)))
+     (cons (fwm-parse-key-combo (string-append mod "+e")) (lambda (x) (exec "rofi -show run")))
+     (cons (fwm-parse-key-combo (string-append mod "+q")) (lambda (x) (exec "xscreensaver-command -lock")))
      )
     )
   )
