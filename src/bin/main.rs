@@ -6,31 +6,23 @@ use ::fwm::ItemIdx;
 use ::fwm::Layout;
 use ::fwm::LayoutAction;
 use ::fwm::MoveCursor;
-use ::fwm::Position;
 use ::fwm::WindowBounds;
 use fwm::ItemAndData;
 use fwm::LayoutDataMut;
-use fwm::LayoutDataRef;
 
 use fwm::scheme::Deserializer;
 use fwm::scheme::Serializer;
-use rand::distributions::{Distribution, Standard};
-use rand::thread_rng;
-use rand::Rng;
 use rust_guile::scm_apply_1;
 use rust_guile::scm_apply_2;
-use rust_guile::scm_apply_3;
 use rust_guile::scm_assert_foreign_object_type;
 use rust_guile::scm_assq_ref;
 use rust_guile::scm_c_define_gsubr;
 use rust_guile::scm_car_unchecked;
 use rust_guile::scm_cdr_unchecked;
-use rust_guile::scm_eq_p;
 use rust_guile::scm_foreign_object_ref;
 use rust_guile::scm_from_uint64;
 use rust_guile::scm_from_utf8_stringn;
 use rust_guile::scm_from_utf8_symbol;
-use rust_guile::scm_gc_malloc;
 use rust_guile::scm_gc_malloc_pointerless;
 use rust_guile::scm_gc_protect_object;
 use rust_guile::scm_gc_unprotect_object;
@@ -39,22 +31,17 @@ use rust_guile::scm_is_truthy;
 use rust_guile::scm_list_1;
 use rust_guile::scm_make_foreign_object_1;
 use rust_guile::scm_make_foreign_object_type;
-use rust_guile::scm_primitive_eval;
 use rust_guile::scm_procedure_p;
 use rust_guile::scm_shell;
 use rust_guile::scm_to_uint64;
-use rust_guile::scm_to_utf8_string;
 use rust_guile::scm_to_utf8_stringn;
 use rust_guile::scm_with_guile;
-use rust_guile::scm_wrong_type_arg_msg;
 use rust_guile::size_t;
 use rust_guile::SCM;
 use rust_guile::SCM_EOL;
 use rust_guile::SCM_UNSPECIFIED;
 use serde::Deserialize;
 use serde::Serialize;
-use x11::keysym::XK_4;
-use x11::keysym::XK_F4;
 use x11::xlib::CWBorderWidth;
 use x11::xlib::CWHeight;
 use x11::xlib::CWWidth;
@@ -63,8 +50,6 @@ use x11::xlib::ControlMask;
 use x11::xlib::CurrentTime;
 use x11::xlib::Display;
 use x11::xlib::GrabModeAsync;
-use x11::xlib::InputOnly;
-use x11::xlib::KeyPress;
 use x11::xlib::KeySym;
 use x11::xlib::LockMask;
 use x11::xlib::Mod1Mask;
@@ -72,9 +57,7 @@ use x11::xlib::Mod2Mask;
 use x11::xlib::Mod3Mask;
 use x11::xlib::Mod4Mask;
 use x11::xlib::Mod5Mask;
-use x11::xlib::NoSymbol;
 use x11::xlib::PointerRoot;
-use x11::xlib::RevertToNone;
 use x11::xlib::RevertToPointerRoot;
 use x11::xlib::ShiftMask;
 use x11::xlib::StructureNotifyMask;
@@ -82,34 +65,24 @@ use x11::xlib::SubstructureNotifyMask;
 use x11::xlib::SubstructureRedirectMask;
 use x11::xlib::XClearWindow;
 use x11::xlib::XConfigureEvent;
-use x11::xlib::XConfigureRequestEvent;
 use x11::xlib::XConfigureWindow;
 use x11::xlib::XCreateSimpleWindow;
-use x11::xlib::XCreateWindowEvent;
 use x11::xlib::XDefaultRootWindow;
 use x11::xlib::XDestroyWindow;
 use x11::xlib::XDestroyWindowEvent;
 use x11::xlib::XErrorEvent;
 use x11::xlib::XEvent;
-use x11::xlib::XGetWindowAttributes;
 use x11::xlib::XGrabKey;
-use x11::xlib::XGrabPointer;
-use x11::xlib::XGrabServer;
 use x11::xlib::XKeyEvent;
-use x11::xlib::XKeyPressedEvent;
 use x11::xlib::XKeycodeToKeysym;
 use x11::xlib::XKeysymToKeycode;
 use x11::xlib::XKeysymToString;
-use x11::xlib::XKillClient;
 use x11::xlib::XMapRequestEvent;
 use x11::xlib::XMapWindow;
 use x11::xlib::XMoveResizeWindow;
 use x11::xlib::XNextEvent;
 use x11::xlib::XOpenDisplay;
 use x11::xlib::XRaiseWindow;
-use x11::xlib::XReparentEvent;
-use x11::xlib::XReparentWindow;
-use x11::xlib::XResizeWindow;
 use x11::xlib::XScreenCount;
 use x11::xlib::XScreenOfDisplay;
 use x11::xlib::XSelectInput;
@@ -117,40 +90,26 @@ use x11::xlib::XSendEvent;
 use x11::xlib::XSetErrorHandler;
 use x11::xlib::XSetIOErrorHandler;
 use x11::xlib::XSetInputFocus;
-use x11::xlib::XSetWindowAttributes;
 use x11::xlib::XSetWindowBackground;
-use x11::xlib::XSetWindowBorder;
 use x11::xlib::XStringToKeysym;
 use x11::xlib::XSync;
 use x11::xlib::XUngrabKey;
-use x11::xlib::XWindowAttributes;
 use x11::xlib::XWindowChanges;
 use x11::xlib::CWX;
 use x11::xlib::CWY;
 
-use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::convert::TryInto;
 use std::ffi::c_void;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Debug;
-use std::iter::empty;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::mem::MaybeUninit;
-use std::os::raw::c_char;
 use std::ptr::null;
 use std::ptr::null_mut;
-use std::rc::Rc;
-
-// fn assert_send<T>()
-// where
-//     T: Send,
-// {
-// }
 
 #[derive(Debug)]
 struct ProtectedScm(SCM);
@@ -324,13 +283,10 @@ struct WindowData {
     client: Option<X11ClientWindowData>,
     decorations: WindowDecorations,
     template: WindowDecorationsTemplate,
-    inner_size: AreaSize,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug)]
-struct ContainerData {
-    inner_size: AreaSize,
-}
+struct ContainerData {}
 
 #[derive(Debug)]
 struct WmState {
@@ -348,8 +304,6 @@ struct WmState {
 }
 
 unsafe impl Send for WmState {}
-
-const BG_COLOR: u64 = 0x00FF00FF;
 
 fn outer_to_inner_size(outer: AreaSize, dt: &WindowDecorationsTemplate) -> AreaSize {
     AreaSize {
@@ -406,7 +360,6 @@ impl WmState {
     unsafe fn update_window_bounds(&mut self, window_idx: usize) {
         let WindowData {
             client,
-            inner_size,
             template,
             decorations,
         } = self
@@ -415,11 +368,12 @@ impl WmState {
             .expect("Client should exist here")
             .unwrap_window();
         let window = client.expect("Window should exist here").window;
+        let bounds = self.layout.bounds(ItemIdx::Window(window_idx));
+        let inner_size = outer_to_inner_size(bounds.content, &template);
         println!(
             "Resizing client window {:#x} to inner size {:?}",
             window, inner_size
         );
-        let bounds = self.layout.bounds(ItemIdx::Window(window_idx));
         // We use XConfigureWindow here, rather than just XMoveResizeWindow,
         // to allow us to set the border width back to 0 in case the client changed
         // it before mapping (XTerm does this, for example)
@@ -488,10 +442,6 @@ impl WmState {
             self.call_on_point_changed();
         }
     }
-    pub fn set_decorations(&mut self, w_idx: usize, decorations: WindowDecorations) {
-        let pd = self.layout.try_window_data_mut(w_idx).unwrap();
-        pd.decorations = decorations;
-    }
 }
 
 impl WmState {
@@ -501,7 +451,7 @@ impl WmState {
         bounds: WindowBounds,
         on_point_changed: ProtectedScm,
     ) -> Self {
-        let mut ret = Self {
+        Self {
             client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
             on_point_changed,
@@ -512,8 +462,7 @@ impl WmState {
 
             display,
             root,
-        };
-        ret
+        }
     }
     pub fn do_and_recompute<I, F>(&mut self, closure: F)
     where
@@ -539,15 +488,7 @@ impl WmState {
     }
     pub fn update_for_action(&mut self, action: LayoutAction<WindowData, ContainerData>) {
         match action {
-            LayoutAction::NewBounds { idx, bounds } => {
-                let inner_size = match idx {
-                    ItemIdx::Window(w_idx) => {
-                        let data = self.layout.try_window_data(w_idx).unwrap();
-                        outer_to_inner_size(bounds.content, &data.template)
-                    }
-                    ItemIdx::Container(c_idx) => bounds.content,
-                };
-                self.set_inner_size(idx, inner_size);
+            LayoutAction::NewBounds { idx, bounds: _ } => {
                 if let ItemIdx::Window(w_idx) = idx {
                     if self
                         .layout
@@ -628,18 +569,6 @@ impl WmState {
             wm.cursor = (new_cursor != wm.layout.cursor_before(wm.point)).then(|| new_cursor);
             None
         });
-    }
-    fn get_inner_size(&self, idx: ItemIdx) -> AreaSize {
-        match self.layout.try_data(idx).unwrap() {
-            fwm::LayoutDataRef::Window(data) => data.inner_size,
-            fwm::LayoutDataRef::Container(data) => data.inner_size,
-        }
-    }
-    fn set_inner_size(&mut self, idx: ItemIdx, inner_size: AreaSize) {
-        match self.layout.try_data_mut(idx).unwrap() {
-            fwm::LayoutDataMut::Window(data) => data.inner_size = inner_size,
-            fwm::LayoutDataMut::Container(data) => data.inner_size = inner_size,
-        }
     }
 }
 
@@ -897,10 +826,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 };
                 scm_apply_1(proc, wm_scm, SCM_EOL);
             }
-            x11::xlib::CreateNotify => {
-                let XCreateWindowEvent { window, .. } = e.create_window;
-                {}
-            }
             x11::xlib::ConfigureRequest => {
                 // Let windows do whatever they want if we haven't taken them over yet.
                 let ev = e.configure_request;
@@ -928,10 +853,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                         // Notify you of your real coordinates.
                         let data = wm.layout.try_window_data(w_idx).unwrap();
                         let idx = ItemIdx::Window(w_idx);
-                        let WindowBounds {
-                            content: _,
-                            position,
-                        } = wm.layout.bounds(idx);
+                        let WindowBounds { content, position } = wm.layout.bounds(idx);
+
+                        let inner_size = outer_to_inner_size(content, &data.template);
 
                         let ev2 = XConfigureEvent {
                             type_: ConfigureNotify,
@@ -942,8 +866,8 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             window: ev.window,
                             x: (position.x + data.template.left.width).try_into().unwrap(),
                             y: (position.y + data.template.up.width).try_into().unwrap(),
-                            width: data.inner_size.width.try_into().unwrap(),
-                            height: data.inner_size.height.try_into().unwrap(),
+                            width: inner_size.width.try_into().unwrap(),
+                            height: inner_size.height.try_into().unwrap(),
                             border_width: 0,
                             above: 0,
                             override_redirect: 0, // ??? XXX
@@ -964,13 +888,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
 
             x11::xlib::MapRequest => {
                 let XMapRequestEvent { window, .. } = e.map_request;
-                // let mut attributes = MaybeUninit::<XWindowAttributes>::uninit();
-                // XGetWindowAttributes(display, window, attributes.as_mut_ptr());
-                // let attributes = attributes.assume_init();
-                // if attributes.class == InputOnly {
-                //     println!("InputOnly window -- not inserting it.");
-                //     continue;
-                // }
 
                 let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
                 let already_mapped = wm.client_window_to_item_idx.contains_key(&window);
@@ -988,7 +905,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                     window,
                                     mapped: false,
                                 }),
-                                inner_size: Default::default(),
                                 decorations,
                                 template: BASIC_DECO,
                             });
@@ -1105,30 +1021,6 @@ unsafe extern "C" fn cursor(state: SCM, dir: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
-unsafe fn scm_car(scm: SCM) -> SCM {
-    if !scm_is_pair(scm) {
-        scm_wrong_type_arg_msg(
-            std::mem::transmute(b"car\0"),
-            0,
-            scm,
-            std::mem::transmute(b"pair\0"),
-        );
-    }
-    scm_car_unchecked(scm)
-}
-
-unsafe fn scm_cdr(scm: SCM) -> SCM {
-    if !scm_is_pair(scm) {
-        scm_wrong_type_arg_msg(
-            std::mem::transmute(b"cdr\0"),
-            0,
-            scm,
-            std::mem::transmute(b"pair\0"),
-        );
-    }
-    scm_cdr_unchecked(scm)
-}
-
 unsafe extern "C" fn get_point(state: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     wm.point.serialize(Serializer::default()).expect("XXX")
@@ -1169,59 +1061,6 @@ unsafe extern "C" fn n_children(state: SCM, ctr: SCM) -> SCM {
     let n = wm.layout.n_children(ItemIdx::Container(ctr));
     scm_from_uint64(n as u64)
 }
-
-// unsafe fn cursor_to_scm(cursor: MoveCursor) -> SCM {
-//     let (car, cdr) = match cursor {
-//         MoveCursor::Split { item, direction } => {
-//             let car = scm_from_utf8_symbol(std::mem::transmute(b"split\0"));
-//             let scm_item = item_idx_to_scm(item);
-//             let scm_direction = scm_from_utf8_symbol(match direction {
-//                 Direction::Up => std::mem::transmute(b"up\0"),
-//                 Direction::Down => std::mem::transmute(b"down\0"),
-//                 Direction::Left => std::mem::transmute(b"left\0"),
-//                 Direction::Right => std::mem::transmute(b"right\0"),
-//             });
-//             let cdr = scm_cons(scm_item, scm_direction);
-//             (car, cdr)
-//         }
-//         MoveCursor::Into { container, index } => {
-//             let car = scm_from_utf8_symbol(std::mem::transmute(b"into\0"));
-//             let cdr = scm_cons(
-//                 scm_from_uint64(container as u64),
-//                 scm_from_uint64(index as u64),
-//             );
-//             (car, cdr)
-//         }
-//     };
-//     scm_cons(car, cdr)
-// }
-
-// unsafe fn cursor_from_scm(scm: SCM) -> MoveCursor {
-//     let (car, cdr) = (scm_car(scm), scm_cdr(scm));
-//     if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"split\0"))) {
-//         let (car, cdr) = (scm_car(cdr), scm_cdr(cdr));
-//         let item = item_idx_from_scm(car);
-//         let direction = if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"up\0"))) {
-//             Direction::Up
-//         } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"down\0"))) {
-//             Direction::Down
-//         } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"left\0"))) {
-//             Direction::Left
-//         } else if scm_is_eq(cdr, scm_from_utf8_symbol(std::mem::transmute(b"right\0"))) {
-//             Direction::Right
-//         } else {
-//             panic!("XXX")
-//         };
-//         MoveCursor::Split { item, direction }
-//     } else if scm_is_eq(car, scm_from_utf8_symbol(std::mem::transmute(b"into\0"))) {
-//         let (car, cdr) = (scm_car(cdr), scm_cdr(cdr));
-//         let container = scm_to_uint64(car).try_into().unwrap();
-//         let index = scm_to_uint64(cdr).try_into().unwrap();
-//         MoveCursor::Into { container, index }
-//     } else {
-//         panic!("XXX")
-//     }
-// }
 
 #[derive(Deserialize, Serialize)]
 enum MoveOrReplace {
@@ -1389,6 +1228,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, dump_layout as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-set-focus\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, set_focus as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-clear-bindings\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, clear_bindings as *mut c_void);
 
     std::ptr::null_mut()
 }

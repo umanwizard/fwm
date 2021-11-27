@@ -9,8 +9,8 @@
     (system (string-append cmd "&"))))
 
 (system "xmodmap ~/.Xmodmap")
-(exec "xscreensaver -no-splash&")
-(system "xsetroot -mod 4 10")
+(exec "xscreensaver -no-splash")
+(system "feh --bg-center ~/bg.png")
 
 (define bindings
   (let ([mod "mod3"])
