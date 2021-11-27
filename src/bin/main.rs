@@ -462,8 +462,9 @@ impl WmState {
         println!("Updating point: {:?} to {:?}", old_point, new_point);
 
         if let ItemIdx::Window(old_w_idx) = old_point {
-            let bounds = self.layout.bounds(old_point);
+            let bounds = self.layout.try_bounds(old_point);
             if let Some(data) = self.layout.try_window_data_mut(old_w_idx) {
+                let bounds = bounds.unwrap();
                 println!(
                     "Data template is {:?}, setting to BASIC_DECO",
                     data.template

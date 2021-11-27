@@ -969,11 +969,14 @@ where
             }
         }
     }
-    pub fn bounds(&self, item: ItemIdx) -> WindowBounds {
+    pub fn try_bounds(&self, item: ItemIdx) -> Option<WindowBounds> {
         match item {
-            ItemIdx::Container(idx) => self.containers[idx].as_ref().unwrap().bounds,
-            ItemIdx::Window(idx) => self.windows[idx].as_ref().unwrap().bounds,
+            ItemIdx::Container(c_idx) => self.containers[c_idx].as_ref().map(|c| c.bounds),
+            ItemIdx::Window(w_idx) => self.windows[w_idx].as_ref().map(|w| w.bounds),
         }
+    }
+    pub fn bounds(&self, item: ItemIdx) -> WindowBounds {
+        self.try_bounds(item).unwrap()
     }
     /// Get the bounds of the gap before element `index` in the container.
     /// `index` may be equal to the container's length, in which case
