@@ -77,6 +77,7 @@ use x11::xlib::ShiftMask;
 use x11::xlib::StructureNotifyMask;
 use x11::xlib::SubstructureNotifyMask;
 use x11::xlib::SubstructureRedirectMask;
+use x11::xlib::XClearWindow;
 use x11::xlib::XConfigureEvent;
 use x11::xlib::XConfigureRequestEvent;
 use x11::xlib::XConfigureWindow;
@@ -305,6 +306,10 @@ unsafe fn configure_decorations(
     XSetWindowBackground(display, d.up, t.up.color.into());
     XSetWindowBackground(display, d.down, t.down.color.into());
     XSetWindowBackground(display, d.right, t.right.color.into());
+    XClearWindow(display, d.left);
+    XClearWindow(display, d.up);
+    XClearWindow(display, d.right);
+    XClearWindow(display, d.down);
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -459,7 +464,10 @@ impl WmState {
         if let ItemIdx::Window(old_w_idx) = old_point {
             let bounds = self.layout.bounds(old_point);
             if let Some(data) = self.layout.try_window_data_mut(old_w_idx) {
-                println!("Data template is {:?}, setting to BASIC_DECO", data.template);
+                println!(
+                    "Data template is {:?}, setting to BASIC_DECO",
+                    data.template
+                );
                 if data.template != BASIC_DECO {
                     data.template = BASIC_DECO;
                     configure_decorations(
@@ -475,7 +483,10 @@ impl WmState {
         if let ItemIdx::Window(new_w_idx) = new_point {
             let bounds = self.layout.bounds(new_point);
             let data = self.layout.try_window_data_mut(new_w_idx).unwrap();
-            println!("Data template is {:?}, setting to POINT_DECO", data.template);
+            println!(
+                "Data template is {:?}, setting to POINT_DECO",
+                data.template
+            );
             if data.template != POINT_DECO {
                 data.template = POINT_DECO;
                 configure_decorations(
