@@ -48,6 +48,7 @@
      (cons (fwm-parse-key-combo (string-append mod "+Return")) (lambda (x) (exec terminal)))
      (cons (fwm-parse-key-combo (string-append mod "+e")) (lambda (x) (exec "rofi -show run")))
      (cons (fwm-parse-key-combo (string-append mod "+q")) (lambda (x) (exec "xscreensaver-command -lock")))
+     (cons (fwm-parse-key-combo (string-append mod "+x")) (lambda (x) (exec "xterm")))
      )
     )
   )

@@ -55,6 +55,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use x11::keysym::XK_4;
 use x11::keysym::XK_F4;
+use x11::xlib::CWBorderWidth;
+use x11::xlib::CWHeight;
+use x11::xlib::CWWidth;
 use x11::xlib::ConfigureNotify;
 use x11::xlib::ControlMask;
 use x11::xlib::CurrentTime;
@@ -122,6 +125,8 @@ use x11::xlib::XSync;
 use x11::xlib::XUngrabKey;
 use x11::xlib::XWindowAttributes;
 use x11::xlib::XWindowChanges;
+use x11::xlib::CWX;
+use x11::xlib::CWY;
 
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
@@ -426,13 +431,25 @@ impl WmState {
             "Resizing client window {:#x} to inner size {:?}",
             window, inner_size
         );
-        XMoveResizeWindow(
+        // We use XConfigureWindow here, rather than just XMoveResizeWindow,
+        // to allow us to set the border width back to 0 in case the client changed
+        // it before mapping (XTerm does this, for example)
+        let value_mask = CWX | CWY | CWWidth | CWHeight | CWBorderWidth;
+        let mut changes = XWindowChanges {
+            x: template.left.width.try_into().unwrap(),
+            y: template.up.width.try_into().unwrap(),
+            width: inner_size.width.try_into().unwrap(),
+            height: inner_size.height.try_into().unwrap(),
+            border_width: 0,
+            // The rest are ignored due to the mask
+            sibling: 0,
+            stack_mode: 0,
+        };
+        XConfigureWindow(
             self.display,
             window,
-            template.left.width.try_into().unwrap(),
-            template.up.width.try_into().unwrap(),
-            inner_size.width.try_into().unwrap(),
-            inner_size.height.try_into().unwrap(),
+            value_mask.into(),
+            (&mut changes) as *mut XWindowChanges,
         );
         let frame_bounds = self.layout.bounds(ItemIdx::Window(window_idx));
         println!(
