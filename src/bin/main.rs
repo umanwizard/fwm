@@ -582,8 +582,8 @@ impl WmState {
                 if let ItemIdx::Window(w_idx) = idx {
                     if self
                         .layout
-                        .try_data(idx)
-                        .map(|md| md.unwrap_window().client.is_some())
+                        .try_window_data(w_idx)
+                        .map(|md| md.client.is_some())
                         .unwrap_or(false)
                     {
                         unsafe {
