@@ -10,7 +10,7 @@
 
 (system "xmodmap ~/.Xmodmap")
 (exec "xscreensaver -no-splash")
-(system "feh --bg-center ~/bg.png")
+(system "feh --bg-max ~/bg.jpg")
 
 (define bindings
   (let ([mod "mod3"])

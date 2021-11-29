@@ -10,6 +10,8 @@ use ::fwm::WindowBounds;
 use fwm::Constructor;
 use fwm::ItemAndData;
 use fwm::LayoutDataMut;
+use fwm::LayoutStrategy;
+use fwm::SlotInContainer;
 
 use fwm::scheme::Deserializer;
 use fwm::scheme::Serializer;
@@ -180,7 +182,6 @@ impl WindowDecorationsTemplate {
         }
     }
 }
-
 const BASIC_DECO: WindowDecorationsTemplate =
     WindowDecorationsTemplate::from_one(&WindowDecorationTemplate {
         color: Rgb {
@@ -209,6 +210,82 @@ const BASIC_CTR_DECO: WindowDecorationsTemplate =
         },
         width: 6,
     });
+const POINT_CTR_DECO: WindowDecorationsTemplate =
+    WindowDecorationsTemplate::from_one(&WindowDecorationTemplate {
+        color: Rgb {
+            r: 0xF4,
+            g: 0x94,
+            b: 0x01,
+        },
+        width: 6,
+    });
+
+fn compute_deco(
+    item: ItemIdx,
+    point: ItemIdx,
+    cursor: Option<MoveCursor>,
+    where_am_i: Option<SlotInContainer>,
+) -> WindowDecorationsTemplate {
+    let move_direction_and_split = cursor.and_then(|c| {
+        where_am_i.and_then(|w| match c {
+            MoveCursor::Split {
+                item: c_item,
+                direction,
+            } if item == c_item => Some((direction, true)),
+            MoveCursor::Split { .. } => None,
+            MoveCursor::Into { container, index } if container == w.c_idx => {
+                if index == w.index {
+                    let dir = match w.parent_strat {
+                        LayoutStrategy::Horizontal => Direction::Left,
+                        LayoutStrategy::Vertical => Direction::Up,
+                    };
+                    Some((dir, false))
+                } else if index + 1 == w.index {
+                    let dir = match w.parent_strat {
+                        LayoutStrategy::Horizontal => Direction::Right,
+                        LayoutStrategy::Vertical => Direction::Down,
+                    };
+                    Some((dir, false))
+                } else {
+                    None
+                }
+            }
+            MoveCursor::Into { .. } => None,
+        })
+    });
+
+    let is_at_point = item == point;
+    let mut deco = match (item, is_at_point) {
+        (ItemIdx::Window(_), true) => POINT_DECO,
+        (ItemIdx::Window(_), false) => BASIC_DECO,
+        (ItemIdx::Container(_), true) => POINT_CTR_DECO,
+        (ItemIdx::Container(_), false) => BASIC_CTR_DECO,
+    };
+
+    if let Some((move_direction, is_split)) = move_direction_and_split {
+        let color = if is_split {
+            Rgb {
+                r: 0xFF,
+                g: 0,
+                b: 0,
+            }
+        } else {
+            Rgb {
+                r: 0xFF,
+                g: 0,
+                b: 0xFF,
+            }
+        };
+        let dir_color_mut = match move_direction {
+            Direction::Left => &mut deco.left.color,
+            Direction::Right => &mut deco.right.color,
+            Direction::Up => &mut deco.up.color,
+            Direction::Down => &mut deco.down.color,
+        };
+        *dir_color_mut = color;
+    }
+    deco
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct WindowDecorations {
@@ -432,42 +509,51 @@ impl WmState {
         configure_decorations(self.display, bounds, &decorations, &template);
     }
 
-    unsafe fn update_cursor(
+    unsafe fn update_point_and_cursor(
         &mut self,
+        old_point: ItemIdx,
+        new_point: ItemIdx,
         old_cursor: Option<MoveCursor>,
         new_cursor: Option<MoveCursor>,
     ) {
-        // TODO - cursor painting
-    }
-
-    unsafe fn update_point(&mut self, old_point: ItemIdx, new_point: ItemIdx) {
-        println!("Updating point: {:?} to {:?}", old_point, new_point);
-
-        if let ItemIdx::Window(old_w_idx) = old_point {
-            let bounds = self.layout.try_bounds(old_point);
-            if let Some(data) = self.layout.try_window_data_mut(old_w_idx) {
-                let bounds = bounds.unwrap();
-                println!(
-                    "Data template is {:?}, setting to BASIC_DECO",
-                    data.template
-                );
-                if data.template != BASIC_DECO {
-                    data.template = BASIC_DECO;
-                    configure_decorations(self.display, bounds, &data.decorations, &data.template);
+        println!(
+            "Updating point: {:?} to {:?} and cursor: {:?} to {:?}",
+            old_point, new_point, old_cursor, new_cursor
+        );
+        let mut possibly_affected = vec![old_point, new_point];
+        for cur in &[old_cursor, new_cursor] {
+            if let Some(cur) = cur {
+                match cur {
+                    MoveCursor::Split { item, direction } => possibly_affected.push(*item),
+                    MoveCursor::Into { container, index } => {
+                        possibly_affected.push(self.layout.children(*container)[*index].1);
+                        if let Some(&(_weight, child)) = (*index > 0)
+                            .then(|| Some(()))
+                            .and_then(|_| self.layout.children(*container).get(*index - 1))
+                        {
+                            possibly_affected.push(child);
+                        }
+                    }
                 }
             }
         }
 
-        if let ItemIdx::Window(new_w_idx) = new_point {
-            let bounds = self.layout.bounds(new_point);
-            let data = self.layout.try_window_data_mut(new_w_idx).unwrap();
-            println!(
-                "Data template is {:?}, setting to POINT_DECO",
-                data.template
-            );
-            if data.template != POINT_DECO {
-                data.template = POINT_DECO;
-                configure_decorations(self.display, bounds, &data.decorations, &data.template);
+        for item in possibly_affected {
+            if self.layout.exists(item) {
+                let where_is_it = self.layout.slot_in_container(item);
+                let t = compute_deco(item, new_point, new_cursor, where_is_it);
+                let bounds = self.layout.bounds(item);
+                let mt = self.try_template_mut(item).unwrap();
+                if *mt != t {
+                    *mt = t;
+                    let rt = self.try_template(item).unwrap();
+                    configure_decorations(
+                        self.display,
+                        bounds,
+                        self.try_decorations(item).unwrap(),
+                        rt,
+                    );
+                }
             }
         }
 
@@ -513,10 +599,7 @@ impl WmState {
             self.update_for_action(action);
         }
         unsafe {
-            self.update_point(old_point, new_point);
-        }
-        unsafe {
-            self.update_cursor(old_cursor, new_cursor);
+            self.update_point_and_cursor(old_point, new_point, old_cursor, new_cursor);
         }
     }
     pub fn update_for_action(&mut self, action: LayoutAction<WindowData, ContainerData>) {
@@ -618,6 +701,30 @@ impl WmState {
             wm.cursor = (new_cursor != wm.layout.cursor_before(wm.point)).then(|| new_cursor);
             None
         });
+    }
+    pub fn try_template_mut(&mut self, item: ItemIdx) -> Option<&mut WindowDecorationsTemplate> {
+        match item {
+            ItemIdx::Window(w) => self
+                .layout
+                .try_window_data_mut(w)
+                .map(|wd| &mut wd.template),
+            ItemIdx::Container(c) => self
+                .layout
+                .try_container_data_mut(c)
+                .map(|cd| &mut cd.template),
+        }
+    }
+    pub fn try_template(&self, item: ItemIdx) -> Option<&WindowDecorationsTemplate> {
+        match item {
+            ItemIdx::Window(w) => self.layout.try_window_data(w).map(|wd| &wd.template),
+            ItemIdx::Container(c) => self.layout.try_container_data(c).map(|cd| &cd.template),
+        }
+    }
+    pub fn try_decorations(&self, item: ItemIdx) -> Option<&WindowDecorations> {
+        match item {
+            ItemIdx::Window(w) => self.layout.try_window_data(w).map(|wd| &wd.decorations),
+            ItemIdx::Container(c) => self.layout.try_container_data(c).map(|cd| &cd.decorations),
+        }
     }
 }
 

@@ -135,6 +135,13 @@ pub trait Constructor {
     fn construct(&mut self) -> Self::Item;
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SlotInContainer {
+    pub c_idx: usize,
+    pub index: usize,
+    pub parent_strat: LayoutStrategy,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layout<W, C, CCtor> {
     windows: Vec<Option<Window<W>>>,
@@ -314,6 +321,19 @@ where
             ItemIdx::Container(c_idx) => self.containers[c_idx].as_ref().unwrap().children.len(),
         }
     }
+
+    pub fn slot_in_container(&self, item: ItemIdx) -> Option<SlotInContainer> {
+        self.parent_container(item).map(|p_ctr| {
+            let iip = self.index_in_parent(item).unwrap();
+            let strat = self.containers[p_ctr].as_ref().unwrap().strategy;
+            SlotInContainer {
+                c_idx: p_ctr,
+                index: iip,
+                parent_strat: strat,
+            }
+        })
+    }
+
     fn iter_descendants(&self, item: ItemIdx) -> DescendantsIter<'_, W, C, CCtor> {
         DescendantsIter::new(self, item)
     }
@@ -581,20 +601,22 @@ where
     C: Serialize + for<'d> Deserialize<'d>,
     CCtor: Constructor<Item = C>,
 {
+    pub fn index_in_parent(&self, item: ItemIdx) -> Option<usize> {
+        self.parent_container(item).map(|parent| {
+            let parent_ctr = self.containers[parent].as_ref().unwrap();
+            parent_ctr
+                .children
+                .iter()
+                .position(|(_, child_idx)| *child_idx == item)
+                .unwrap()
+        })
+    }
     pub fn cursor_before(&self, point: ItemIdx) -> MoveCursor {
         match self.parent_container(point) {
-            Some(parent) => {
-                let parent_ctr = self.containers[parent].as_ref().unwrap();
-                let index_in_parent = parent_ctr
-                    .children
-                    .iter()
-                    .position(|(_, child_idx)| *child_idx == point)
-                    .unwrap();
-                MoveCursor::Into {
-                    container: parent,
-                    index: index_in_parent,
-                }
-            }
+            Some(parent) => MoveCursor::Into {
+                container: parent,
+                index: self.index_in_parent(point).unwrap(),
+            },
             None => MoveCursor::Split {
                 item: ItemIdx::Container(0),
                 direction: match self.containers[0].as_ref().unwrap().strategy {
@@ -709,12 +731,8 @@ where
                 });
             }
             Some(mut parent) => {
+                let index_in_parent = self.index_in_parent(item).unwrap();
                 let parent_ctr = self.containers[parent].as_mut().unwrap();
-                let index_in_parent = parent_ctr
-                    .children
-                    .iter()
-                    .position(|(_, child_idx)| *child_idx == item)
-                    .unwrap();
                 parent_ctr.children.remove(index_in_parent);
                 // fuse if necessary
                 if let Some(grandparent) = self.parent_container(ItemIdx::Container(parent)) {
