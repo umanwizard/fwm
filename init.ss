@@ -8,6 +8,7 @@
   (lambda (cmd)
     (system (string-append cmd "&"))))
 
+(system "vmware-user-suid-wrapper")
 (system "xmodmap ~/.Xmodmap")
 (exec "xscreensaver -no-splash")
 (system "feh --bg-max ~/bg.jpg")

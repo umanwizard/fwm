@@ -240,7 +240,7 @@ fn compute_deco(
                         LayoutStrategy::Vertical => Direction::Up,
                     };
                     Some((dir, false))
-                } else if index + 1 == w.index {
+                } else if index == w.index + 1 {
                     let dir = match w.parent_strat {
                         LayoutStrategy::Horizontal => Direction::Right,
                         LayoutStrategy::Vertical => Direction::Down,
@@ -526,7 +526,9 @@ impl WmState {
                 match cur {
                     MoveCursor::Split { item, direction } => possibly_affected.push(*item),
                     MoveCursor::Into { container, index } => {
-                        possibly_affected.push(self.layout.children(*container)[*index].1);
+                        if let Some(&(_weight, child)) = self.layout.children(*container).get(*index) {
+                            possibly_affected.push(child);
+                        }
                         if let Some(&(_weight, child)) = (*index > 0)
                             .then(|| Some(()))
                             .and_then(|_| self.layout.children(*container).get(*index - 1))

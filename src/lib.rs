@@ -701,6 +701,7 @@ where
     pub fn destroy(&mut self, item: ItemIdx) -> Vec<LayoutAction<W, C>> {
         let to_destroy = self.iter_descendants(item).collect::<Vec<_>>();
         let parent = self.parent_container(item);
+        let index_in_parent = self.index_in_parent(item);
         // Remove items from the layout, and take their data for passing back up
         let mut result = to_destroy
             .iter()
@@ -731,7 +732,7 @@ where
                 });
             }
             Some(mut parent) => {
-                let index_in_parent = self.index_in_parent(item).unwrap();
+                let index_in_parent = index_in_parent.unwrap();
                 let parent_ctr = self.containers[parent].as_mut().unwrap();
                 parent_ctr.children.remove(index_in_parent);
                 // fuse if necessary
