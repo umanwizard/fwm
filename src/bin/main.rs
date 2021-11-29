@@ -7,6 +7,7 @@ use ::fwm::Layout;
 use ::fwm::LayoutAction;
 use ::fwm::MoveCursor;
 use ::fwm::WindowBounds;
+use fwm::Constructor;
 use fwm::ItemAndData;
 use fwm::LayoutDataMut;
 
@@ -199,6 +200,16 @@ const POINT_DECO: WindowDecorationsTemplate =
         width: 3,
     });
 
+const BASIC_CTR_DECO: WindowDecorationsTemplate =
+    WindowDecorationsTemplate::from_one(&WindowDecorationTemplate {
+        color: Rgb {
+            r: 0xCC,
+            g: 0xCC,
+            b: 0xCC,
+        },
+        width: 6,
+    });
+
 #[derive(Serialize, Deserialize, Debug)]
 struct WindowDecorations {
     left: x11::xlib::Window,
@@ -285,15 +296,37 @@ struct WindowData {
     template: WindowDecorationsTemplate,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug)]
-struct ContainerData {}
+#[derive(Debug)]
+struct ContainerDataConstructor {
+    display: *mut Display,
+    root: x11::xlib::Window,
+}
+
+impl Constructor for ContainerDataConstructor {
+    type Item = ContainerData;
+
+    fn construct(&mut self) -> Self::Item {
+        let decorations = unsafe { make_decorations(self.display, self.root) };
+        let template = BASIC_CTR_DECO;
+        ContainerData {
+            decorations,
+            template,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ContainerData {
+    decorations: WindowDecorations,
+    template: WindowDecorationsTemplate,
+}
 
 #[derive(Debug)]
 struct WmState {
     pub client_window_to_item_idx: HashMap<x11::xlib::Window, usize>,
     pub bindings: HashMap<KeyCombo, ProtectedScm>,
     //    pub on_point_changed: ProtectedScm,
-    pub layout: Layout<WindowData, ContainerData>,
+    pub layout: Layout<WindowData, ContainerData, ContainerDataConstructor>,
     pub point: ItemIdx,
     pub cursor: Option<MoveCursor>,
 
@@ -455,7 +488,7 @@ impl WmState {
             client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
             on_point_changed,
-            layout: Layout::new_in_bounds(bounds),
+            layout: Layout::new(bounds, ContainerDataConstructor { display, root }, 6),
             point: ItemIdx::Container(0),
             cursor: None,
             focused: None,
@@ -488,8 +521,8 @@ impl WmState {
     }
     pub fn update_for_action(&mut self, action: LayoutAction<WindowData, ContainerData>) {
         match action {
-            LayoutAction::NewBounds { idx, bounds: _ } => {
-                if let ItemIdx::Window(w_idx) = idx {
+            LayoutAction::NewBounds { idx, bounds } => match idx {
+                ItemIdx::Window(w_idx) => {
                     if self
                         .layout
                         .try_window_data(w_idx)
@@ -501,7 +534,18 @@ impl WmState {
                         }
                     }
                 }
-            }
+                ItemIdx::Container(c_idx) => {
+                    let data = self.layout.try_container_data(c_idx).unwrap();
+                    unsafe {
+                        configure_decorations(
+                            self.display,
+                            bounds,
+                            &data.decorations,
+                            &data.template,
+                        );
+                    }
+                }
+            },
             LayoutAction::ItemDestroyed { item } => {
                 if let ItemAndData::Window(idx, data) = &item {
                     if self.focused == Some(*idx) {

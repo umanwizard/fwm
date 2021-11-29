@@ -62,6 +62,7 @@ pub struct Container<C> {
     parent: Option<usize>, // None for root
     bounds: WindowBounds,
     inter: usize,
+    padding: usize,
     data: C,
 }
 
@@ -128,14 +129,20 @@ impl<'a, W, C> LayoutDataMut<'a, W, C> {
     }
 }
 
+pub trait Constructor {
+    type Item;
+
+    fn construct(&mut self) -> Self::Item;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Layout<W, C>
-where
-    C: Default,
-{
+pub struct Layout<W, C, CCtor> {
     windows: Vec<Option<Window<W>>>,
     containers: Vec<Option<Container<C>>>, // 0 is the root
     root_bounds: WindowBounds,
+    default_padding: usize,
+    #[serde(skip)]
+    cctor: Option<CCtor>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Copy, Serialize, Deserialize)]
@@ -161,22 +168,14 @@ impl MoveCursor {
     }
 }
 
-struct DescendantsIter<'a, W, C>
-where
-    W: Serialize + for<'d> Deserialize<'d>,
-    C: Serialize + for<'d> Deserialize<'d> + Default,
-{
-    layout: &'a Layout<W, C>,
+struct DescendantsIter<'a, W, C, CCtor> {
+    layout: &'a Layout<W, C, CCtor>,
     next: Option<ItemIdx>,
     orig: ItemIdx,
 }
 
-impl<'a, W, C> DescendantsIter<'a, W, C>
-where
-    W: Serialize + for<'d> Deserialize<'d>,
-    C: Serialize + for<'d> Deserialize<'d> + Default,
-{
-    pub fn new(layout: &'a Layout<W, C>, item: ItemIdx) -> Self {
+impl<'a, W, C, CCtor> DescendantsIter<'a, W, C, CCtor> {
+    pub fn new(layout: &'a Layout<W, C, CCtor>, item: ItemIdx) -> Self {
         Self {
             layout,
             next: Some(item),
@@ -208,10 +207,11 @@ where
     }
 }
 
-impl<'a, W, C> Iterator for DescendantsIter<'a, W, C>
+impl<'a, W, C, CCtor> Iterator for DescendantsIter<'a, W, C, CCtor>
 where
     W: Serialize + for<'d> Deserialize<'d>,
-    C: Serialize + for<'d> Deserialize<'d> + Default,
+    C: Serialize + for<'d> Deserialize<'d>,
+    CCtor: Constructor<Item = C>,
 {
     type Item = ItemIdx;
 
@@ -251,10 +251,11 @@ where
         })
     }
 }
-impl<W, C> Layout<W, C>
+impl<W, C, CCtor> Layout<W, C, CCtor>
 where
     W: Serialize + for<'d> Deserialize<'d>,
-    C: Serialize + for<'d> Deserialize<'d> + Default,
+    C: Serialize + for<'d> Deserialize<'d>,
+    CCtor: Constructor<Item = C>,
 {
     fn try_window(&self, w_idx: usize) -> Option<&Window<W>> {
         self.windows.get(w_idx).and_then(|mw| mw.as_ref())
@@ -313,7 +314,7 @@ where
             ItemIdx::Container(c_idx) => self.containers[c_idx].as_ref().unwrap().children.len(),
         }
     }
-    fn iter_descendants(&self, item: ItemIdx) -> DescendantsIter<'_, W, C> {
+    fn iter_descendants(&self, item: ItemIdx) -> DescendantsIter<'_, W, C, CCtor> {
         DescendantsIter::new(self, item)
     }
     /// Put a container where `split` was, and put `inserted` and `split` into that container, their order controlled by `inserted_first`.
@@ -353,7 +354,8 @@ where
                     parent: Some(parent),
                     bounds,
                     inter: 0, // TODO - this should be configurable.
-                    data: Default::default(),
+                    data: self.cctor.as_mut().expect("Must set cctor!").construct(),
+                    padding: self.default_padding,
                 });
                 let ctr = self.containers[parent].as_mut().unwrap();
                 ctr.children[index_in_parent].1 = ItemIdx::Container(next_c_idx);
@@ -387,6 +389,7 @@ where
                             inter,
                             parent: _,
                             data: _,
+                            padding: _,
                         } = self.containers[0].take().unwrap();
                         let new_ctr = Container {
                             strategy,
@@ -394,7 +397,8 @@ where
                             bounds: Default::default(),
                             inter,
                             parent: Some(0),
-                            data: Default::default(),
+                            data: self.cctor.as_mut().expect("Must set cctor!").construct(),
+                            padding: self.default_padding,
                         };
                         self.containers[next_c_idx] = Some(new_ctr);
                         self.containers[0] = Some(Container {
@@ -407,7 +411,8 @@ where
                             parent: None,
                             bounds,
                             inter: 0,
-                            data: Default::default(),
+                            data: self.cctor.as_mut().expect("Must set cctor!").construct(),
+                            padding: self.default_padding,
                         });
                         0
                     }
@@ -426,21 +431,30 @@ where
         let total_inter = ctr.inter * (ctr.children.len().saturating_sub(1));
         let available_area = match strat {
             LayoutStrategy::Vertical => AreaSize {
-                height: ctr_bounds.content.height - total_inter,
-                width: ctr_bounds.content.width,
+                height: ctr_bounds
+                    .content
+                    .height
+                    .saturating_sub(total_inter + 2 * ctr.padding),
+                width: ctr_bounds.content.width.saturating_sub(2 * ctr.padding),
             },
             LayoutStrategy::Horizontal => AreaSize {
-                height: ctr_bounds.content.height,
-                width: ctr_bounds.content.width - total_inter,
+                height: ctr_bounds.content.height.saturating_sub(2 * ctr.padding),
+                width: ctr_bounds
+                    .content
+                    .width
+                    .saturating_sub(total_inter + 2 * ctr.padding),
             },
         };
         let begin = match strat {
-            LayoutStrategy::Vertical => ctr_bounds.position.y + ctr.inter,
-            LayoutStrategy::Horizontal => ctr_bounds.position.x + ctr.inter,
+            LayoutStrategy::Vertical => ctr_bounds.position.y + ctr.padding,
+            LayoutStrategy::Horizontal => ctr_bounds.position.x + ctr.padding,
         };
         let total_weight: f64 = ctr.children.iter().map(|(weight, _)| weight).sum();
         let mut next_window_origin = ctr_bounds.position;
+        next_window_origin.x += ctr.padding;
+        next_window_origin.y += ctr.padding;
         let inter = ctr.inter;
+        let padding = ctr.padding;
         let mut to_fix = vec![];
         let mut cumsum = 0.0;
         for &(weight, child) in ctr.children.iter() {
@@ -561,10 +575,11 @@ pub struct ChildLocation {
     pub index: usize,
 }
 
-impl<W, C> Layout<W, C>
+impl<W, C, CCtor> Layout<W, C, CCtor>
 where
     W: Serialize + for<'d> Deserialize<'d>,
-    C: Serialize + for<'d> Deserialize<'d> + Default,
+    C: Serialize + for<'d> Deserialize<'d>,
+    CCtor: Constructor<Item = C>,
 {
     pub fn cursor_before(&self, point: ItemIdx) -> MoveCursor {
         match self.parent_container(point) {
@@ -589,11 +604,14 @@ where
             },
         }
     }
-    pub fn new_in_bounds(bounds: WindowBounds) -> Self {
+    pub fn new(bounds: WindowBounds, mut cctor: CCtor, default_padding: usize) -> Self {
+        let root_data = cctor.construct();
         let mut this = Self {
             windows: Default::default(),
             containers: Default::default(),
             root_bounds: bounds,
+            cctor: Some(cctor),
+            default_padding,
         };
         this.containers.push(Some(Container {
             bounds,
@@ -601,7 +619,8 @@ where
             inter: 0,
             parent: None,
             strategy: LayoutStrategy::Horizontal,
-            data: Default::default(),
+            data: root_data,
+            padding: default_padding,
         }));
         this
     }
@@ -685,7 +704,8 @@ where
                     parent: None,
                     inter: Default::default(),
                     bounds: self.root_bounds,
-                    data: Default::default(),
+                    data: self.cctor.as_mut().expect("Must set cctor!").construct(),
+                    padding: self.default_padding,
                 });
             }
             Some(mut parent) => {
@@ -1021,12 +1041,13 @@ where
             LayoutStrategy::Horizontal => container.bounds.content.width,
             LayoutStrategy::Vertical => container.bounds.content.height,
         };
-        let content_size = main_dim_bound - total_inter;
+        // XXX - padding should be configurable on all four sides
+        let content_size = main_dim_bound - total_inter - 2 * container.padding;
         // The distance from the
         // beginning of the container
         // to the end of the `i-1`th child
         // (or 0, when i is 0)
-        let mut cum_distance = 0.0;
+        let mut cum_distance = container.padding as f64;
         for i in 0..index {
             let normalized = container.children[i].0 / total_weight;
             cum_distance += normalized * (content_size as f64) + container.inter as f64;
@@ -1034,21 +1055,21 @@ where
         match container.strategy {
             LayoutStrategy::Horizontal => WindowBounds {
                 content: AreaSize {
-                    height: container.bounds.content.height,
+                    height: container.bounds.content.height - 2 * container.padding,
                     width: container.inter,
                 },
                 position: Position {
                     x: container.bounds.position.x + cum_distance as usize,
-                    y: container.bounds.position.y,
+                    y: container.bounds.position.y + container.padding,
                 },
             },
             LayoutStrategy::Vertical => WindowBounds {
                 content: AreaSize {
                     height: container.inter,
-                    width: container.bounds.content.width,
+                    width: container.bounds.content.width - 2 * container.padding,
                 },
                 position: Position {
-                    x: container.bounds.position.x,
+                    x: container.bounds.position.x + container.padding,
                     y: container.bounds.position.y + cum_distance as usize,
                 },
             },
