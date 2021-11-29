@@ -567,7 +567,12 @@ impl WmState {
                         self.kill_window(data.decorations.right);
                         self.kill_window(data.decorations.left);
                     },
-                    ItemAndData::Container(_, _) => {}
+                    ItemAndData::Container(_, data) => unsafe {
+                        self.kill_window(data.decorations.down);
+                        self.kill_window(data.decorations.up);
+                        self.kill_window(data.decorations.right);
+                        self.kill_window(data.decorations.left);
+                    },
                 };
             }
             LayoutAction::ItemHidden { idx: _ } => unimplemented!(),
