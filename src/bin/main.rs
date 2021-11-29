@@ -836,18 +836,22 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     let screen = XScreenOfDisplay(display, 0);
     let screen = std::ptr::read(screen);
 
-    let wm = WmState::new(
-        display,
-        root,
-        WindowBounds {
-            position: Default::default(),
-            content: AreaSize {
-                width: screen.width.try_into().unwrap(),
-                height: screen.height.try_into().unwrap(),
-            },
+    let root_bounds = WindowBounds {
+        position: Default::default(),
+        content: AreaSize {
+            width: screen.width.try_into().unwrap(),
+            height: screen.height.try_into().unwrap(),
         },
-        on_point_changed,
-    );
+    };
+
+    let mut wm = WmState::new(display, root, root_bounds, on_point_changed);
+
+    wm.do_and_recompute(|_wm| {
+        Some(LayoutAction::NewBounds {
+            idx: ItemIdx::Container(0),
+            bounds: root_bounds,
+        })
+    });
 
     let wm_scm = make_foreign_object(wm, b"WmState\0", WM_STATE_TYPE);
 
