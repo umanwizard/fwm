@@ -526,7 +526,9 @@ impl WmState {
                 match cur {
                     MoveCursor::Split { item, direction } => possibly_affected.push(*item),
                     MoveCursor::Into { container, index } => {
-                        if let Some(&(_weight, child)) = self.layout.children(*container).get(*index) {
+                        if let Some(&(_weight, child)) =
+                            self.layout.children(*container).get(*index)
+                        {
                             possibly_affected.push(child);
                         }
                         if let Some(&(_weight, child)) = (*index > 0)
@@ -1163,13 +1165,25 @@ enum SpatialDir {
 }
 
 unsafe extern "C" fn navigate(state: SCM, dir: SCM) -> SCM {
-    let dir = match SpatialDir::deserialize(Deserializer { scm: dir }).expect("XXX") {
-        SpatialDir::Planar(dir) => dir,
-        _ => todo!(),
-    };
-    println!("dir is {:?}", dir);
-    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
-    wm.navigate(dir);
+    let mut wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    match SpatialDir::deserialize(Deserializer { scm: dir }).expect("XXX") {
+        SpatialDir::Planar(dir) => {
+            wm.navigate(dir);
+        }
+        SpatialDir::Parent => {
+            if let Some(parent_ctr) = wm.layout.parent_container(wm.point) {
+                wm.point = ItemIdx::Container(parent_ctr);
+            }
+        }
+        SpatialDir::Child => {
+            if let ItemIdx::Container(c_idx) = wm.point {
+                let children = wm.layout.children(c_idx);
+                if let Some(&(_weight, item)) = children.get(0) {
+                    wm.point = item;
+                }
+            }
+        }
+    }
     SCM_UNSPECIFIED
 }
 

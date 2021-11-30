@@ -11,7 +11,7 @@
 (system "vmware-user-suid-wrapper")
 (system "xmodmap ~/.Xmodmap")
 (exec "xscreensaver -no-splash")
-(system "feh --bg-max ~/bg.jpg")
+(system "feh --bg-max ~/bg.png")
 
 (define bindings
   (let ([mod "mod3"])
