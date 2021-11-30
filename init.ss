@@ -13,6 +13,49 @@
 (exec "xscreensaver -no-splash")
 (system "feh --bg-max ~/bg.png")
 
+(define rust-option-to-scheme
+  (lambda (op)
+    (cond
+     [(eq? op '()) #f]
+     [else (car op)])))
+
+(define item-for-cursor
+  (lambda (wm cursor)
+    (cond
+     [(eq? (car cursor) 'Split)
+      (assq-ref (cdr cursor) 'item)]
+     [(eq? (car cursor) 'Into)
+      (let ([container (assq-ref (cdr cursor) 'contanier)]
+            [index (assq-ref (cdr cursor) 'index)])
+           (rust-option-to-scheme (fwm-nth-child wm container index)))])))
+
+(define get-cursor-or-default
+  (lambda (wm)
+    (let ([cur (fwm-get-cursor wm)])
+      (cond
+       [(eq? cur '())
+         (let* ([parent-slot (fwm-slot-in-container (fwm-get-point wm))]
+                [ctr (assq-ref parent-slot 'c_idx)]
+                [index (assq-ref parent-slot 'index)])
+               (cons 'Into
+                 (list
+                   (cons 'container ctr)
+                   (cons 'index index)
+                 )))]
+       [else (car cur)]))))
+
+(define make-split-cursor
+  (lambda (item dir)
+    (cons 'Split
+      (list (cons 'item item) (cons 'direction dir)))))
+
+(define set-split
+  (lambda (wm dir)
+    (let* ([cur (get-cursor-or-default wm)]
+           [item (item-for-cursor wm cur)])
+      (if item (fwm-set-cursor wm (make-split-cursor item dir))))))
+      
+
 (define bindings
   (let ([mod "mod3"])
     (list
@@ -32,6 +75,7 @@
      (cons (fwm-parse-key-combo (string-append mod "+shift+d")) (lambda (x) (fwm-cursor x 'Child)))
      (cons (fwm-parse-key-combo (string-append mod "+shift+period")) (lambda (x) (quit)))
      (cons (fwm-parse-key-combo (string-append mod "+p")) (lambda (x) (let ([layout (fwm-dump-layout x)]) (display layout) (newline)  )))
+     (cons (fwm-parse-key-combo (string-append mod "+v")) (lambda (wm) (set-split wm 'Down)))
 					; (cons (fwm-parse-key-combo (string-append mod "+m")) fwm-split-Right)
 					; (cons (fwm-parse-key-combo (string-append mod "+v")) fwm-split-Down)
 					;        (cons (fwm-parse-key-combo (string-append mod "+M"))

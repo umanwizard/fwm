@@ -1208,6 +1208,24 @@ unsafe extern "C" fn get_point(state: SCM) -> SCM {
     wm.point.serialize(Serializer::default()).expect("XXX")
 }
 
+unsafe extern "C" fn get_cursor(state: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    wm.cursor.serialize(Serializer::default()).expect("XXX")
+}
+
+unsafe extern "C" fn set_cursor(state: SCM, cursor: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let cursor = Option::<MoveCursor>::deserialize(Deserializer { scm: cursor }).expect("XXX");
+    if let Some(cursor) = cursor {
+        assert!(wm.layout.is_cursor_valid(cursor), "XXX");
+    }
+    wm.do_and_recompute(|wm| {
+        wm.cursor = cursor;
+        None
+    });
+    SCM_UNSPECIFIED 
+}
+
 unsafe fn scm_from_bool(x: bool) -> SCM {
     if x {
         SCM_BOOL_T
@@ -1365,6 +1383,11 @@ unsafe extern "C" fn set_focus(state: SCM, point: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
+unsafe extern "C" fn nth_child(state: SCM, container: SCM, index: SCM) -> SCM {
+    let mut wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+
+}
+
 // TODO - codegen this, as well as translating Scheme objects to Rust objects in the function bodies
 // (similar to what we did in PyTorch)
 unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
@@ -1412,6 +1435,10 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, set_focus as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-clear-bindings\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, clear_bindings as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-set-cursor\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, set_cursor as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-get-cursor\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, get_cursor as *mut c_void);
 
     std::ptr::null_mut()
 }

@@ -277,6 +277,15 @@ where
         self.containers.get_mut(c_idx).and_then(|mc| mc.as_mut())
     }
 
+    pub fn is_cursor_valid(&self, cursor: MoveCursor) -> bool {
+        match cursor {
+            MoveCursor::Split { item, direction: _ } => self.exists(item),
+            MoveCursor::Into { container, index } => {
+                self.containers.get(container).and_then(Option::as_ref).map(|c| index <= c.children.len()).unwrap_or(false)
+            },
+        }
+    }
+
     pub fn try_data(&self, item: ItemIdx) -> Option<LayoutDataRef<'_, W, C>> {
         match item {
             ItemIdx::Window(w_idx) => self
