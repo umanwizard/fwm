@@ -280,9 +280,12 @@ where
     pub fn is_cursor_valid(&self, cursor: MoveCursor) -> bool {
         match cursor {
             MoveCursor::Split { item, direction: _ } => self.exists(item),
-            MoveCursor::Into { container, index } => {
-                self.containers.get(container).and_then(Option::as_ref).map(|c| index <= c.children.len()).unwrap_or(false)
-            },
+            MoveCursor::Into { container, index } => self
+                .containers
+                .get(container)
+                .and_then(Option::as_ref)
+                .map(|c| index <= c.children.len())
+                .unwrap_or(false),
         }
     }
 
@@ -772,7 +775,7 @@ where
         };
         result
     }
-    pub fn is_ancestor(&self, ancestor: ItemIdx, descendant: ItemIdx) -> bool {
+    pub fn is_ancestor(&self, ancestor: ItemIdx, mut descendant: ItemIdx) -> bool {
         if ancestor == descendant {
             return true;
         }
@@ -784,6 +787,7 @@ where
             if parent == a_ctr {
                 return true;
             }
+            descendant = ItemIdx::Container(parent);
         }
         false
     }

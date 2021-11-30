@@ -1223,7 +1223,7 @@ unsafe extern "C" fn set_cursor(state: SCM, cursor: SCM) -> SCM {
         wm.cursor = cursor;
         None
     });
-    SCM_UNSPECIFIED 
+    SCM_UNSPECIFIED
 }
 
 unsafe fn scm_from_bool(x: bool) -> SCM {
@@ -1395,8 +1395,11 @@ unsafe extern "C" fn nth_child(state: SCM, container: SCM, index: SCM) -> SCM {
 
 unsafe extern "C" fn child_location(state: SCM, point: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
-    let point = ItemIdx::deserialize(Deserializer { scm: point } ).expect("XXX");
-    let loc = wm.layout.child_location(point).unwrap_or(ChildLocation { container: 0, index: 0});
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    let loc = wm.layout.child_location(point).unwrap_or(ChildLocation {
+        container: 0,
+        index: 0,
+    });
     let scm = loc.serialize(Serializer::default()).unwrap();
     scm
 }
