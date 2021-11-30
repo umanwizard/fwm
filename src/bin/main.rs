@@ -1401,6 +1401,19 @@ unsafe extern "C" fn child_location(state: SCM, point: SCM) -> SCM {
     scm
 }
 
+unsafe extern "C" fn move_point_to_cursor(state: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    if let Some(cursor) = wm.cursor {
+        if !wm.layout.is_ancestor(wm.point, cursor.item()) {
+            wm.do_and_recompute(|wm| {
+                let actions = wm.layout.r#move(wm.point, cursor);
+                actions
+            });
+        }
+    }
+    SCM_UNSPECIFIED
+}
+
 // TODO - codegen this, as well as translating Scheme objects to Rust objects in the function bodies
 // (similar to what we did in PyTorch)
 unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
@@ -1456,6 +1469,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 3, 0, 0, nth_child as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-child-location\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, child_location as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-move-point-to-cursor\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, move_point_to_cursor as *mut c_void);
 
     std::ptr::null_mut()
 }

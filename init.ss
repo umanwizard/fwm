@@ -84,6 +84,7 @@
      (cons (fwm-parse-key-combo (string-append mod "+v")) (lambda (wm) (set-split wm 'Down)))
      (cons (fwm-parse-key-combo (string-append mod "+m")) (lambda (wm) (set-split wm 'Right)))
      (cons (fwm-parse-key-combo (string-append mod "+Escape")) (lambda (wm) (fwm-set-cursor wm '())))
+     (cons (fwm-parse-key-combo (string-append mod "+Tab")) fwm-move-point-to-cursor)
 					; (cons (fwm-parse-key-combo (string-append mod "+m")) fwm-split-Right)
 					; (cons (fwm-parse-key-combo (string-append mod "+v")) fwm-split-Down)
 					;        (cons (fwm-parse-key-combo (string-append mod "+M"))
