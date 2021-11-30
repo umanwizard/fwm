@@ -576,14 +576,14 @@ where
         to_ctr
     }
     /// Returns None for one past end
-    fn item_from_child_location(&self, cl: ChildLocation) -> Option<ItemIdx> {
+    pub fn item_from_child_location(&self, cl: ChildLocation) -> Option<ItemIdx> {
         let ChildLocation { container, index } = cl;
         let ctr = self.containers[container].as_ref().unwrap();
         assert!(index <= ctr.children.len());
         ctr.children.get(index).map(|(_, idx)| *idx)
     }
     /// Returns None for the root
-    fn child_location(&self, item: ItemIdx) -> Option<ChildLocation> {
+    pub fn child_location(&self, item: ItemIdx) -> Option<ChildLocation> {
         self.parent_container(item).map(|container| {
             let index = self.containers[container]
                 .as_ref()

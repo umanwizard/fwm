@@ -1372,7 +1372,7 @@ unsafe extern "C" fn dump_layout(state: SCM) -> SCM {
 }
 
 unsafe extern "C" fn set_focus(state: SCM, point: SCM) -> SCM {
-    let mut wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let maybe_window: Option<usize> =
         Deserialize::deserialize(Deserializer { scm: point }).expect("XXX");
     if let Some(window) = maybe_window {
@@ -1384,8 +1384,21 @@ unsafe extern "C" fn set_focus(state: SCM, point: SCM) -> SCM {
 }
 
 unsafe extern "C" fn nth_child(state: SCM, container: SCM, index: SCM) -> SCM {
-    let mut wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let container = usize::deserialize(Deserializer { scm: container }).expect("XXX");
+    let index = usize::deserialize(Deserializer { scm: index }).expect("XXX");
+    let cl = ChildLocation { container, index };
+    let item = wm.layout.item_from_child_location(cl);
+    let scm = item.serialize(Serializer::default()).unwrap();
+    scm
+}
 
+unsafe extern "C" fn child_location(state: SCM, point: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let point = ItemIdx::deserialize(Deserializer { scm: point } ).expect("XXX");
+    let loc = wm.layout.child_location(point).unwrap_or(ChildLocation { container: 0, index: 0});
+    let scm = loc.serialize(Serializer::default()).unwrap();
+    scm
 }
 
 // TODO - codegen this, as well as translating Scheme objects to Rust objects in the function bodies
@@ -1439,6 +1452,10 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, set_cursor as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-get-cursor\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, get_cursor as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-nth-child\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 3, 0, 0, nth_child as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-child-location\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, child_location as *mut c_void);
 
     std::ptr::null_mut()
 }

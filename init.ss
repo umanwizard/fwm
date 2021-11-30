@@ -11,7 +11,7 @@
 (system "vmware-user-suid-wrapper")
 (system "xmodmap ~/.Xmodmap")
 (exec "xscreensaver -no-splash")
-(system "feh --bg-max ~/bg.png")
+(system "feh --bg-max ~/bg.jpg")
 
 (define rust-option-to-scheme
   (lambda (op)
@@ -25,8 +25,12 @@
      [(eq? (car cursor) 'Split)
       (assq-ref (cdr cursor) 'item)]
      [(eq? (car cursor) 'Into)
-      (let ([container (assq-ref (cdr cursor) 'contanier)]
+      (let ([container (assq-ref (cdr cursor) 'container)]
             [index (assq-ref (cdr cursor) 'index)])
+           (display container)
+           (display " ")
+           (display index)
+           (display "\n")
            (rust-option-to-scheme (fwm-nth-child wm container index)))])))
 
 (define get-cursor-or-default
@@ -34,8 +38,8 @@
     (let ([cur (fwm-get-cursor wm)])
       (cond
        [(eq? cur '())
-         (let* ([parent-slot (fwm-slot-in-container (fwm-get-point wm))]
-                [ctr (assq-ref parent-slot 'c_idx)]
+         (let* ([parent-slot (fwm-child-location wm (fwm-get-point wm))]
+                [ctr (assq-ref parent-slot 'container)]
                 [index (assq-ref parent-slot 'index)])
                (cons 'Into
                  (list
@@ -53,7 +57,9 @@
   (lambda (wm dir)
     (let* ([cur (get-cursor-or-default wm)]
            [item (item-for-cursor wm cur)])
-      (if item (fwm-set-cursor wm (make-split-cursor item dir))))))
+      (display item)
+      (display "\n")
+      (if item (fwm-set-cursor wm (list (make-split-cursor item dir)))))))
       
 
 (define bindings
@@ -76,6 +82,8 @@
      (cons (fwm-parse-key-combo (string-append mod "+shift+period")) (lambda (x) (quit)))
      (cons (fwm-parse-key-combo (string-append mod "+p")) (lambda (x) (let ([layout (fwm-dump-layout x)]) (display layout) (newline)  )))
      (cons (fwm-parse-key-combo (string-append mod "+v")) (lambda (wm) (set-split wm 'Down)))
+     (cons (fwm-parse-key-combo (string-append mod "+m")) (lambda (wm) (set-split wm 'Right)))
+     (cons (fwm-parse-key-combo (string-append mod "+Escape")) (lambda (wm) (fwm-set-cursor wm '())))
 					; (cons (fwm-parse-key-combo (string-append mod "+m")) fwm-split-Right)
 					; (cons (fwm-parse-key-combo (string-append mod "+v")) fwm-split-Down)
 					;        (cons (fwm-parse-key-combo (string-append mod "+M"))
@@ -98,8 +106,7 @@
     )
   )
 
-					; TODO - use the cursor for this stuff
-(define place-new-window
+(define place-new-window-at-point
   (lambda (wm)
     (let* ([point (fwm-get-point wm)]
 	   )
@@ -115,6 +122,12 @@
     )
   )
 	   
+(define place-new-window
+  (lambda (wm)
+    (let ([cursor (rust-option-to-scheme (fwm-get-cursor wm))])
+      (if cursor (cons 'Move cursor)
+             (place-new-window-at-point wm)))))
+
 (define focus-if-window
   (lambda (wm point)
     (when (eq? (car point) 'Window)
@@ -124,7 +137,7 @@
 (fwm-run-wm
  (list
   (cons 'bindings  bindings)
-  (cons 'place-new-window  place-new-window)
+  (cons 'place-new-window place-new-window)
   (cons 'on-point-changed focus-if-window)
   )
  )
