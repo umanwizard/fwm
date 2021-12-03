@@ -749,12 +749,12 @@ where
                 parent_ctr.children.remove(index_in_parent);
                 // fuse if necessary
                 if let Some(grandparent) = self.parent_container(ItemIdx::Container(parent)) {
-                    let parent_ctr = self.containers[parent].take().unwrap();
-                    result.push(LayoutAction::ItemDestroyed {
-                        item: ItemAndData::Container(parent, parent_ctr.data),
-                    });
-                    let gp_ctr = self.containers[grandparent].as_ref().unwrap();
-                    if parent_ctr.children.len() == 1 {
+                    if self.containers[parent].as_ref().unwrap().children.len() == 1 {
+                        let parent_ctr = self.containers[parent].take().unwrap();
+                        let gp_ctr = self.containers[grandparent].as_ref().unwrap();
+                        result.push(LayoutAction::ItemDestroyed {
+                            item: ItemAndData::Container(parent, parent_ctr.data),
+                        });
                         let index_in_gp = gp_ctr
                             .children
                             .iter()
