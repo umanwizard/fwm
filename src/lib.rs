@@ -710,6 +710,37 @@ where
             }
         }
     }
+    /// Returns the container that remains (i.e., the GP) if a fuse was done
+    fn fuse_if_necessary(
+        &mut self,
+        parent: usize,
+        result: &mut Vec<LayoutAction<W, C>>,
+    ) -> Option<usize> {
+        if let Some(grandparent) = self.parent_container(ItemIdx::Container(parent)) {
+            if self.containers[parent].as_ref().unwrap().children.len() == 1 {
+                let parent_ctr = self.containers[parent].take().unwrap();
+                let gp_ctr = self.containers[grandparent].as_ref().unwrap();
+                result.push(LayoutAction::ItemDestroyed {
+                    item: ItemAndData::Container(parent, parent_ctr.data),
+                });
+                let index_in_gp = gp_ctr
+                    .children
+                    .iter()
+                    .position(|(_, child_idx)| *child_idx == ItemIdx::Container(parent))
+                    .unwrap();
+                let child = parent_ctr.children[0].1;
+
+                let gp_ctr = self.containers[grandparent].as_mut().unwrap();
+                gp_ctr.children[index_in_gp].1 = child;
+                *(match child {
+                    ItemIdx::Container(idx) => &mut self.containers[idx].as_mut().unwrap().parent,
+                    ItemIdx::Window(idx) => &mut self.windows[idx].as_mut().unwrap().parent,
+                }) = Some(grandparent);
+                return Some(grandparent);
+            }
+        }
+        None
+    }
     pub fn destroy(&mut self, item: ItemIdx) -> Vec<LayoutAction<W, C>> {
         let to_destroy = self.iter_descendants(item).collect::<Vec<_>>();
         let parent = self.parent_container(item);
@@ -748,30 +779,8 @@ where
                 let parent_ctr = self.containers[parent].as_mut().unwrap();
                 parent_ctr.children.remove(index_in_parent);
                 // fuse if necessary
-                if let Some(grandparent) = self.parent_container(ItemIdx::Container(parent)) {
-                    if self.containers[parent].as_ref().unwrap().children.len() == 1 {
-                        let parent_ctr = self.containers[parent].take().unwrap();
-                        let gp_ctr = self.containers[grandparent].as_ref().unwrap();
-                        result.push(LayoutAction::ItemDestroyed {
-                            item: ItemAndData::Container(parent, parent_ctr.data),
-                        });
-                        let index_in_gp = gp_ctr
-                            .children
-                            .iter()
-                            .position(|(_, child_idx)| *child_idx == ItemIdx::Container(parent))
-                            .unwrap();
-                        let child = parent_ctr.children[0].1;
-
-                        let gp_ctr = self.containers[grandparent].as_mut().unwrap();
-                        gp_ctr.children[index_in_gp].1 = child;
-                        *(match child {
-                            ItemIdx::Container(idx) => {
-                                &mut self.containers[idx].as_mut().unwrap().parent
-                            }
-                            ItemIdx::Window(idx) => &mut self.windows[idx].as_mut().unwrap().parent,
-                        }) = Some(grandparent);
-                        parent = grandparent;
-                    }
+                if let Some(grandparent) = self.fuse_if_necessary(parent, &mut result) {
+                    parent = grandparent;
                 }
                 self.layout(ItemIdx::Container(parent), &mut result);
             }
