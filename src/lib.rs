@@ -825,7 +825,8 @@ where
         }
         // we know `from` is not the root, because of the ancestry check above.
         // So the unwrap is safe.
-        let from_parent = self.parent_container(from);
+        let mut from_parent = self.parent_container(from);
+        let mut result = vec![];
         let idx_in_parent = if let Some(from_parent) = from_parent {
             let parent_ctr = self.containers[from_parent].as_mut().unwrap();
             let idx_in_parent = parent_ctr
@@ -852,7 +853,11 @@ where
             _ => to,
         };
         let insert_modified = self.insert(from, to);
-        let mut result = vec![];
+        if let Some(fp) = from_parent {
+            if let Some(gp) = self.fuse_if_necessary(fp, &mut result) {
+                from_parent = Some(gp);
+            }
+        }
         self.layout(ItemIdx::Container(insert_modified), &mut result);
         if from_parent.is_some()
             && !self.is_ancestor(
