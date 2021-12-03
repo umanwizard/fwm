@@ -749,7 +749,10 @@ where
                 parent_ctr.children.remove(index_in_parent);
                 // fuse if necessary
                 if let Some(grandparent) = self.parent_container(ItemIdx::Container(parent)) {
-                    let parent_ctr = self.containers[parent].as_ref().unwrap();
+                    let parent_ctr = self.containers[parent].take().unwrap();
+                    result.push(LayoutAction::ItemDestroyed {
+                        item: ItemAndData::Container(parent, parent_ctr.data),
+                    });
                     let gp_ctr = self.containers[grandparent].as_ref().unwrap();
                     if parent_ctr.children.len() == 1 {
                         let index_in_gp = gp_ctr
@@ -758,9 +761,9 @@ where
                             .position(|(_, child_idx)| *child_idx == ItemIdx::Container(parent))
                             .unwrap();
                         let child = parent_ctr.children[0].1;
+
                         let gp_ctr = self.containers[grandparent].as_mut().unwrap();
                         gp_ctr.children[index_in_gp].1 = child;
-                        self.containers[parent] = None;
                         *(match child {
                             ItemIdx::Container(idx) => {
                                 &mut self.containers[idx].as_mut().unwrap().parent
@@ -946,7 +949,6 @@ where
         }
         let move_horizontal = dir == Direction::Left || dir == Direction::Right;
         let move_to_first = dir == Direction::Right || dir == Direction::Down;
-        eprintln!("Ancestor is {:?}", ancestor);
         if may_descend
             || !matches!(
                 ancestor,

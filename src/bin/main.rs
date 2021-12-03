@@ -599,7 +599,7 @@ impl WmState {
         let new_cursor = self.cursor;
 
         for action in actions {
-            eprintln!("Running action: {:?}", action);
+            println!("Running action: {:?}", action);
             self.update_for_action(action);
         }
         unsafe {
@@ -654,7 +654,8 @@ impl WmState {
                         self.kill_window(data.decorations.right);
                         self.kill_window(data.decorations.left);
                     },
-                    ItemAndData::Container(_, data) => unsafe {
+                    ItemAndData::Container(i, data) => unsafe {
+                        println!("Destroyed container {}", i);
                         self.kill_window(data.decorations.down);
                         self.kill_window(data.decorations.up);
                         self.kill_window(data.decorations.right);
@@ -1368,7 +1369,14 @@ unsafe extern "C" fn drop_wm_state(state: SCM) {
 unsafe extern "C" fn dump_layout(state: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let s = format!("{}", serde_json::to_string_pretty(&wm.layout).unwrap());
-    scm_from_utf8_stringn(std::mem::transmute(s.as_ptr()), s.len() as u64)
+    println!("{}", s);
+    SCM_UNSPECIFIED
+}
+
+unsafe extern "C" fn get_layout(state: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let scm = wm.layout.serialize(Serializer::default()).unwrap();
+    scm
 }
 
 unsafe extern "C" fn set_focus(state: SCM, point: SCM) -> SCM {
@@ -1460,6 +1468,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, kill_client_at as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-dump-layout\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, dump_layout as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-get-layout\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, get_layout as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-set-focus\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, set_focus as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-clear-bindings\0").unwrap();
