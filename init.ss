@@ -3,7 +3,7 @@
     (lambda (wm)
       (f wm (fwm-get-point wm)))))
 
-(define terminal "sakura")
+(define terminal "~/.local/bin/sakura")
 (define exec
   (lambda (cmd)
     (system (string-append cmd "&"))))
