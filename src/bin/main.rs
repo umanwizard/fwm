@@ -506,7 +506,6 @@ impl WmState {
             value_mask.into(),
             (&mut changes) as *mut XWindowChanges,
         );
-        configure_decorations(self.display, bounds, &decorations, &template);
     }
 
     unsafe fn update_point_and_cursor(
@@ -618,6 +617,16 @@ impl WmState {
                     {
                         unsafe {
                             self.update_window_bounds(w_idx);
+                        }
+                    }
+                    if let Some(data) = self.layout.try_window_data(w_idx) {
+                        unsafe {
+                            configure_decorations(
+                                self.display,
+                                bounds,
+                                &data.decorations,
+                                &data.template,
+                            );
                         }
                     }
                 }
@@ -1300,6 +1309,24 @@ unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
+unsafe extern "C" fn new_window_at(state: SCM, cursor: SCM) -> SCM {
+    let cur = MoveOrReplace::deserialize(Deserializer { scm: cursor }).expect("XXX");
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let decorations = make_decorations(wm.display, wm.root);
+    let win = wm.layout.alloc_window(WindowData {
+        client: None,
+        decorations,
+        template: BASIC_DECO,
+    });
+    match cur {
+        MoveOrReplace::Move(cur) => {
+            wm.do_and_recompute(|wm| wm.layout.r#move(ItemIdx::Window(win), cur));
+        }
+        MoveOrReplace::Replace(_) => todo!(),
+    }
+    SCM_UNSPECIFIED
+}
+
 unsafe extern "C" fn kill_client_at(state: SCM, point: SCM) -> SCM {
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
@@ -1484,6 +1511,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, child_location as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-move-point-to-cursor\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, move_point_to_cursor as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-new-window-at\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, new_window_at as *mut c_void);
 
     std::ptr::null_mut()
 }

@@ -61,6 +61,14 @@
       (display "\n")
       (if item (fwm-set-cursor wm (list (make-split-cursor item dir)))))))
       
+(define place-layout-slot
+  (lambda (wm)
+    (let ([cursor (rust-option-to-scheme (fwm-get-cursor wm))])
+      (if cursor (cons 'Move cursor)
+	  (let* ([point (fwm-get-point wm)]
+		 [container (fwm-nearest-container wm point)]
+		 [n_ctr_children (fwm-n-children wm container)])
+	    (fwm-make-cursor-into container n_ctr_children))))))
 
 (define bindings
   (let ([mod "mod3"])
@@ -100,6 +108,7 @@
 					;        (cons (fwm-parse-key-combo (string-append mod "+g")) fwm-move)
 					;        (cons (fwm-parse-key-combo (string-append mod "+G")) fwm-cursor-to-point)
      (cons (fwm-parse-key-combo (string-append mod "+Return")) (lambda (x) (exec terminal)))
+     (cons (fwm-parse-key-combo (string-append mod "+shift+Return")) (lambda (wm) (fwm-new-window-at wm (place-layout-slot wm))))
      (cons (fwm-parse-key-combo (string-append mod "+e")) (lambda (x) (exec "rofi -show run")))
      (cons (fwm-parse-key-combo (string-append mod "+q")) (lambda (x) (exec "xscreensaver-command -lock")))
      (cons (fwm-parse-key-combo (string-append mod "+x")) (lambda (x) (exec "xterm")))
