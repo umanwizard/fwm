@@ -11,7 +11,21 @@
 (system "vmware-user-suid-wrapper")
 (system "xmodmap ~/.Xmodmap")
 (exec "xscreensaver -no-splash")
-(system "feh --bg-max ~/bg.jpg")
+
+(define random-wallpaper
+  (lambda ()
+    (use-modules (ice-9 ftw))
+    (let* ([wp-dir "./wallpapers/"]
+           [wps (scandir wp-dir (lambda (f) (or (string-suffix? ".jpg" f) (string-suffix? ".png" f))))]
+           [idx (random (length wps))]
+           [entry (list-ref wps idx)])
+      (string-append wp-dir entry))))
+
+(define set-wallpaper
+  (lambda ()
+    (system (string-append "feh --bg-max " (random-wallpaper)))))
+
+(set-wallpaper)
 
 (define rust-option-to-scheme
   (lambda (op)
@@ -111,7 +125,7 @@
      (cons (fwm-parse-key-combo (string-append mod "+shift+Return")) (lambda (wm) (fwm-new-window-at wm (place-layout-slot wm))))
      (cons (fwm-parse-key-combo (string-append mod "+e")) (lambda (x) (exec "rofi -show run")))
      (cons (fwm-parse-key-combo (string-append mod "+q")) (lambda (x) (exec "xscreensaver-command -lock")))
-     (cons (fwm-parse-key-combo (string-append mod "+x")) (lambda (x) (exec "xterm")))
+     (cons (fwm-parse-key-combo (string-append mod "+x")) (lambda (x) (set-wallpaper)))
      )
     )
   )
