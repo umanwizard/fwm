@@ -853,6 +853,13 @@ where
             _ => to,
         };
         let insert_modified = self.insert(from, to);
+        if matches!(to, MoveCursor::Split { .. }) {
+            // This will have created a new container; notify the client code.
+            result.push(LayoutAction::NewBounds {
+                idx: ItemIdx::Container(insert_modified),
+                bounds: self.containers[insert_modified].as_ref().unwrap().bounds,
+            });
+        }
         if let Some(fp) = from_parent {
             if let Some(gp) = self.fuse_if_necessary(fp, &mut result) {
                 from_parent = Some(gp);
