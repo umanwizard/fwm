@@ -21,9 +21,43 @@
            [entry (list-ref wps idx)])
       (string-append wp-dir entry))))
 
+(define wall-past '())
+
+(define wall-future (list (random-wallpaper)))
+
+(define wall-cur #f)
+
+(define wall-back
+  (lambda ()
+    (if (equal? wall-past '())
+	#f
+	(let ([new (car wall-past)]
+	      [old wall-cur])
+	  (set! wall-past (cdr wall-past))
+	  (set! wall-cur new)
+	  (set! wall-future (cons old wall-future))
+	  new))))
+
+(define wall-fwd
+  (lambda ()
+    (if (equal? wall-future '())
+	#f
+	(let ([new (car wall-future)]
+	      [old wall-cur])
+	  (set! wall-future (cdr wall-future))
+	  (set! wall-cur new)
+	  (set! wall-past (cons old wall-past))
+	  new))))
+
+(import (rnrs base (6)))
+
 (define set-wallpaper
   (lambda ()
-    (system (string-append "feh --bg-max " (random-wallpaper)))))
+    (if (equal? wall-future '())
+	(set! wall-future (list (random-wallpaper))))
+    (let ([wp (wall-fwd)])
+      (assert wp)
+      (system (string-append "feh --bg-max " wp)))))
 
 (set-wallpaper)
 
@@ -126,6 +160,11 @@
      (cons (fwm-parse-key-combo (string-append mod "+e")) (lambda (x) (exec "rofi -show run")))
      (cons (fwm-parse-key-combo (string-append mod "+q")) (lambda (x) (exec "xscreensaver-command -lock")))
      (cons (fwm-parse-key-combo (string-append mod "+x")) (lambda (x) (set-wallpaper)))
+     (cons (fwm-parse-key-combo (string-append mod "+shift+x"))
+	   (lambda (x)
+	     (let ([wp (wall-back)])
+	       (if wp
+		   (system (string-append "feh --bg-max " wp))))))
      )
     )
   )
