@@ -36,7 +36,8 @@
 	      [old wall-cur])
 	  (set! wall-past (cdr wall-past))
 	  (set! wall-cur new)
-	  (set! wall-future (cons old wall-future))
+      (if old
+	    (set! wall-future (cons old wall-future)))
 	  new))))
 
 (define wall-fwd
@@ -51,6 +52,12 @@
 	  new))))
 
 (import (rnrs base (6)))
+
+(define set-wallpaper-killing-future
+  (lambda ()
+    (set! wall-future '())
+    (set! wall-cur #f)
+    (set-wallpaper)))
 
 (define set-wallpaper
   (lambda ()
@@ -161,6 +168,7 @@
      (cons (fwm-parse-key-combo (string-append mod "+e")) (lambda (x) (exec "rofi -show run")))
      (cons (fwm-parse-key-combo (string-append mod "+q")) (lambda (x) (exec "xscreensaver-command -lock")))
      (cons (fwm-parse-key-combo (string-append mod "+x")) (lambda (x) (set-wallpaper)))
+     (cons (fwm-parse-key-combo (string-append mod "+y")) (lambda (x) (set-wallpaper-killing-future)))
      (cons (fwm-parse-key-combo (string-append mod "+shift+x"))
 	   (lambda (x)
 	     (let ([wp (wall-back)])
