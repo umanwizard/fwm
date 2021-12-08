@@ -1,3 +1,4 @@
+(set! *random-state* (random-state-from-platform))
 (define at-point
   (lambda (f)
     (lambda (wm)
