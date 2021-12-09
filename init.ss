@@ -59,13 +59,17 @@
     (set! wall-cur #f)
     (set-wallpaper)))
 
+(define do-set-wp
+  (lambda (f)
+    (system* "feh" "--bg-max" f)))
+
 (define set-wallpaper
   (lambda ()
     (if (equal? wall-future '())
 	(set! wall-future (list (random-wallpaper))))
     (let ([wp (wall-fwd)])
       (assert wp)
-      (system (string-append "feh --bg-max " wp)))))
+      (do-set-wp wp))))
 
 (set-wallpaper)
 
@@ -173,7 +177,7 @@
 	   (lambda (x)
 	     (let ([wp (wall-back)])
 	       (if wp
-		   (system (string-append "feh --bg-max " wp))))))
+		   (do-set-wp wp)))))
      )
     )
   )
