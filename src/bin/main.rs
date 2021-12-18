@@ -948,7 +948,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     XSelectInput(
         display,
         root,
-        SubstructureRedirectMask | SubstructureNotifyMask,
+        StructureNotifyMask | SubstructureRedirectMask | SubstructureNotifyMask,
     );
     XSync(display, 0);
 
@@ -1056,6 +1056,21 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             &mut ev2 as *mut XEvent,
                         );
                         println!("XSendEvent status for synthetic configure: {}", status);
+                    }
+                }
+            }
+
+            x11::xlib::ConfigureNotify => {
+                let XConfigureEvent { window, width, height, .. } = e.configure;
+
+                if window == root {
+                    let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                    let new_bounds = WindowBounds {
+                        position: Default::default(),
+                        content: AreaSize { width: width.try_into().unwrap(), height: height.try_into().unwrap() }
+                    };
+                    if new_bounds != wm.layout.root_bounds() {
+                        wm.do_and_recompute(|wm| wm.layout.resize(new_bounds))
                     }
                 }
             }

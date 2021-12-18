@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use x11::xlib::XSetWindowBackground;
 
 pub mod scheme;
 
@@ -613,6 +614,9 @@ where
     C: Serialize + for<'d> Deserialize<'d>,
     CCtor: Constructor<Item = C>,
 {
+    pub fn root_bounds(&self) -> WindowBounds {
+        self.root_bounds
+    }
     pub fn index_in_parent(&self, item: ItemIdx) -> Option<usize> {
         self.parent_container(item).map(|parent| {
             let parent_ctr = self.containers[parent].as_ref().unwrap();
