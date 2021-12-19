@@ -674,11 +674,6 @@ impl WmState {
                     if self.focused == Some(*idx) {
                         self.focused = None;
                     }
-                    if let Some(window) = data.client {
-                        unsafe {
-                            self.kill_window(window.window);
-                        }
-                    }
                 }
                 match item {
                     ItemAndData::Window(_, data) => unsafe {
