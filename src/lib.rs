@@ -1,3 +1,4 @@
+use log::info;
 use serde::{Deserialize, Serialize};
 use x11::xlib::XSetWindowBackground;
 
@@ -666,7 +667,7 @@ where
         self.windows.iter().filter_map(Option::as_ref)
     }
     pub fn resize(&mut self, bounds: WindowBounds) -> Vec<LayoutAction<W, C>> {
-        println!("Resizing in wb: {:?}", bounds);
+        info!("Resizing in wb: {:?}", bounds);
         self.containers[0].as_mut().unwrap().bounds = bounds;
         self.root_bounds = bounds;
         let mut out = vec![];
@@ -680,7 +681,6 @@ where
         }
     }
     fn topo_next_recursive(&self, item: ItemIdx) -> Option<ItemIdx> {
-        println!("in tnr with item {:?}", item);
         self.parent_container(item).and_then(|parent| {
             let parent_ctr = self.containers[parent].as_ref().unwrap();
             let idx_in_parent = parent_ctr

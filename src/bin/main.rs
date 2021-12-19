@@ -15,6 +15,8 @@ use fwm::SlotInContainer;
 
 use fwm::scheme::Deserializer;
 use fwm::scheme::Serializer;
+use log::error;
+use log::info;
 use rust_guile::scm_apply_1;
 use rust_guile::scm_apply_2;
 use rust_guile::scm_assert_foreign_object_type;
@@ -489,10 +491,6 @@ impl WmState {
         let window = client.expect("Window should exist here").window;
         let bounds = self.layout.bounds(ItemIdx::Window(window_idx));
         let inner_size = outer_to_inner_size(bounds.content, &template);
-        println!(
-            "Resizing client window {:#x} to inner size {:?}",
-            window, inner_size
-        );
         // We use XConfigureWindow here, rather than just XMoveResizeWindow,
         // to allow us to set the border width back to 0 in case the client changed
         // it before mapping (XTerm does this, for example)
@@ -524,7 +522,7 @@ impl WmState {
         old_cursor: Option<MoveCursor>,
         new_cursor: Option<MoveCursor>,
     ) {
-        println!(
+        info!(
             "Updating point: {:?} to {:?} and cursor: {:?} to {:?}",
             old_point, new_point, old_cursor, new_cursor
         );
@@ -627,7 +625,7 @@ impl WmState {
         let new_cursor = self.cursor;
 
         for action in actions {
-            println!("Running action: {:?}", action);
+            info!("Running action: {:?}", action);
             self.update_for_action(action);
         }
         unsafe {
@@ -693,7 +691,6 @@ impl WmState {
                         self.kill_window(data.decorations.left);
                     },
                     ItemAndData::Container(i, data) => unsafe {
-                        println!("Destroyed container {}", i);
                         self.kill_window(data.decorations.down);
                         self.kill_window(data.decorations.up);
                         self.kill_window(data.decorations.right);
@@ -946,13 +943,13 @@ unsafe fn get_foreign_object<'a, T>(obj: SCM, r#type: SCM) -> &'a mut T {
 }
 
 unsafe extern "C" fn x_err(_display: *mut Display, ev: *mut XErrorEvent) -> i32 {
-    println!("X error: {:?}", *ev);
+    error!("X error: {:?}", *ev);
     0
 }
 
 unsafe extern "C" fn x_io_err(_display: *mut Display) -> i32 {
     let e = std::io::Error::last_os_error();
-    println!("X io error (last: {:?})", e);
+    error!("X io error (last: {:?})", e);
     0
 }
 
@@ -1015,14 +1012,13 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         let mut e = MaybeUninit::<XEvent>::uninit();
         XNextEvent(display, e.as_mut_ptr());
         let e = e.assume_init();
-        println!("Event: {:?}", e);
+        info!("Event: {:?}", e);
         match e.type_ {
             x11::xlib::KeyPress => {
                 let XKeyEvent { keycode, state, .. } = e.key;
                 let keysym = XKeycodeToKeysym(display, keycode.try_into().unwrap(), 0); // TODO - figure out what the zero means here.
 
                 let combo = KeyCombo::from_x(keysym, state);
-                println!("{}", combo);
                 let proc = {
                     let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                     wm.bindings[&combo].0 // XXX
@@ -1084,7 +1080,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             StructureNotifyMask,
                             &mut ev2 as *mut XEvent,
                         );
-                        println!("XSendEvent status for synthetic configure: {}", status);
                     }
                 }
             }
@@ -1347,7 +1342,6 @@ unsafe extern "C" fn make_cursor_before(state: SCM, point: SCM) -> SCM {
 
 unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
-    println!("Killing item at {:?}", point);
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     wm.do_and_recompute(|wm| {
         let topo_next = wm.layout.topological_next(wm.point);
@@ -1357,7 +1351,6 @@ unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
         }
         actions
     });
-    println!("Finished do and recompute in kill_item_at");
     SCM_UNSPECIFIED
 }
 
@@ -1602,6 +1595,7 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
 }
 
 fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     unsafe {
         scm_with_guile(Some(scheme_setup), null_mut());
         scm_shell(0, null_mut());
