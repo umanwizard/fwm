@@ -130,6 +130,10 @@
 		 [n_ctr_children (fwm-n-children wm container)])
 	    (fwm-make-cursor-into container n_ctr_children))))))
 
+(define copy-ss
+  (lambda ()
+    (exec "scrot -sf '/tmp/%F_%T_$wx$h.png' -e 'xclip -selection clipboard -target image/png -i $f'")))
+
 (define bindings
   (let ([mod "mod3"])
     (list
@@ -164,6 +168,7 @@
 	     (let ([wp (wall-back)])
 	       (if wp
 		   (do-set-wp wp)))))
+     (cons (fwm-parse-key-combo (string-append mod "+Print")) (lambda (_) (copy-ss)))
      )
     )
   )
