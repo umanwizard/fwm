@@ -48,7 +48,8 @@
 	      [old wall-cur])
 	  (set! wall-future (cdr wall-future))
 	  (set! wall-cur new)
-	  (set! wall-past (cons old wall-past))
+	  (if old 
+	      (set! wall-past (cons old wall-past)))
 	  new))))
 
 (import (rnrs base (6)))
