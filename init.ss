@@ -170,6 +170,18 @@
 	       (if wp
 		   (do-set-wp wp)))))
      (cons (fwm-parse-key-combo (string-append mod "+Print")) (lambda (_) (copy-ss)))
+     (cons (fwm-parse-key-combo (string-append mod "+z"))
+	   (at-point
+	    (lambda (wm pt)
+	      (define (is-leaf pt)
+		(eq? (car pt) 'Window))
+	      (let* ([descendants (fwm-all-descendants wm pt)]
+		     [leaves (filter is-leaf descendants)])
+		(for-each
+		 (lambda (leaf)
+		   (fwm-request-kill-client-at wm (cdr leaf)))
+		 leaves)
+		))))
      )
     )
   )

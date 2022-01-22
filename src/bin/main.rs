@@ -45,9 +45,12 @@ use rust_guile::SCM_EOL;
 use rust_guile::SCM_UNSPECIFIED;
 use serde::Deserialize;
 use serde::Serialize;
+use x11::xlib::Atom;
 use x11::xlib::CWBorderWidth;
 use x11::xlib::CWHeight;
 use x11::xlib::CWWidth;
+use x11::xlib::ClientMessage;
+use x11::xlib::ClientMessageData;
 use x11::xlib::ConfigureNotify;
 use x11::xlib::ControlMask;
 use x11::xlib::CurrentTime;
@@ -67,6 +70,7 @@ use x11::xlib::StructureNotifyMask;
 use x11::xlib::SubstructureNotifyMask;
 use x11::xlib::SubstructureRedirectMask;
 use x11::xlib::XClearWindow;
+use x11::xlib::XClientMessageEvent;
 use x11::xlib::XConfigureEvent;
 use x11::xlib::XConfigureWindow;
 use x11::xlib::XCreateSimpleWindow;
@@ -75,7 +79,9 @@ use x11::xlib::XDestroyWindow;
 use x11::xlib::XDestroyWindowEvent;
 use x11::xlib::XErrorEvent;
 use x11::xlib::XEvent;
+use x11::xlib::XGetWMProtocols;
 use x11::xlib::XGrabKey;
+use x11::xlib::XInternAtom;
 use x11::xlib::XKeyEvent;
 use x11::xlib::XKeycodeToKeysym;
 use x11::xlib::XKeysymToKeycode;
@@ -411,6 +417,8 @@ struct WmState {
     pub root: x11::xlib::Window,
     pub focused: Option<usize>,
     pub on_point_changed: ProtectedScm,
+    pub delete_window_atom: Atom,
+    pub protocols_atom: Atom,
 }
 
 unsafe impl Send for WmState {}
@@ -573,6 +581,10 @@ impl WmState {
         bounds: WindowBounds,
         on_point_changed: ProtectedScm,
     ) -> Self {
+        let delete_window_atom =
+            unsafe { XInternAtom(display, std::mem::transmute(b"WM_DELETE_WINDOW\0"), 0) };
+        let protocols_atom =
+            unsafe { XInternAtom(display, std::mem::transmute(b"WM_PROTOCOLS\0"), 0) };
         Self {
             client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
@@ -584,8 +596,24 @@ impl WmState {
 
             display,
             root,
+            delete_window_atom,
+            protocols_atom,
         }
     }
+
+    pub fn supports_wm_delete(&self, window: x11::xlib::Window) -> bool {
+        let mut atoms = null_mut();
+        let mut count = 0;
+        let status = unsafe { XGetWMProtocols(self.display, window, &mut atoms, &mut count) };
+        assert_ne!(status, 0);
+        // Let RAII handle freeing the atoms
+        let boxed = unsafe {
+            let slice = std::slice::from_raw_parts_mut(atoms, count.try_into().unwrap());
+            Box::from_raw(slice)
+        };
+        boxed.iter().any(|&atom| atom == self.delete_window_atom)
+    }
+
     pub fn do_and_recompute<I, F>(&mut self, closure: F)
     where
         I: IntoIterator<Item = LayoutAction<WindowData, ContainerData>>,
@@ -1332,6 +1360,32 @@ unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
+unsafe extern "C" fn request_kill_client_at(state: SCM, window: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let window = scm_to_uint64(window).try_into().unwrap();
+    if let Some(client) = wm.layout.try_window_data(window).expect("XXX").client {
+        if wm.supports_wm_delete(client.window) {
+            let mut cmd: ClientMessageData = Default::default();
+            cmd.set_long(0, wm.delete_window_atom.try_into().unwrap());
+            let client_message = XClientMessageEvent {
+                type_: ClientMessage,
+                serial: 0,
+                send_event: 0,
+                display: wm.display,
+                window: client.window,
+                message_type: wm.protocols_atom,
+                format: 32,
+                data: cmd,
+            };
+            let mut ev = XEvent { client_message };
+            XSendEvent(wm.display, client.window, 0, 0, &mut ev);
+        } else {
+            todo!()
+        }
+    }
+    SCM_UNSPECIFIED
+}
+
 unsafe extern "C" fn new_window_at(state: SCM, cursor: SCM) -> SCM {
     let cur = MoveOrReplace::deserialize(Deserializer { scm: cursor }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
@@ -1475,6 +1529,14 @@ unsafe extern "C" fn move_point_to_cursor(state: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
+unsafe extern "C" fn all_descendants(state: SCM, point: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    let iter = wm.layout.iter_descendants(point);
+    let result_list = serde::Serializer::collect_seq(Serializer::default(), iter).unwrap();
+    result_list
+}
+
 // TODO - codegen this, as well as translating Scheme objects to Rust objects in the function bodies
 // (similar to what we did in PyTorch)
 unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
@@ -1536,6 +1598,10 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, move_point_to_cursor as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-new-window-at\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, new_window_at as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-all-descendants\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, all_descendants as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-request-kill-client-at\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, request_kill_client_at as *mut c_void);
 
     std::ptr::null_mut()
 }

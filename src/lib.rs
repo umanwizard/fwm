@@ -176,7 +176,7 @@ impl MoveCursor {
     }
 }
 
-struct DescendantsIter<'a, W, C, CCtor> {
+pub struct DescendantsIter<'a, W, C, CCtor> {
     layout: &'a Layout<W, C, CCtor>,
     next: Option<ItemIdx>,
     orig: ItemIdx,
@@ -347,7 +347,7 @@ where
         })
     }
 
-    fn iter_descendants(&self, item: ItemIdx) -> DescendantsIter<'_, W, C, CCtor> {
+    pub fn iter_descendants(&self, item: ItemIdx) -> DescendantsIter<'_, W, C, CCtor> {
         DescendantsIter::new(self, item)
     }
     /// Put a container where `split` was, and put `inserted` and `split` into that container, their order controlled by `inserted_first`.
