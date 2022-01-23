@@ -34,6 +34,7 @@ use rust_guile::scm_is_truthy;
 use rust_guile::scm_list_1;
 use rust_guile::scm_make_foreign_object_1;
 use rust_guile::scm_make_foreign_object_type;
+use rust_guile::scm_permanent_object;
 use rust_guile::scm_procedure_p;
 use rust_guile::scm_shell;
 use rust_guile::scm_to_uint64;
@@ -1002,9 +1003,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         })
     });
 
-    let wm_scm = make_foreign_object(wm, b"WmState\0", WM_STATE_TYPE);
+    let wm_scm = make_foreign_object_from_ref(&mut wm, WM_STATE_TYPE);
 
-    insert_bindings(wm_scm, bindings);
+    insert_bindings(wm_scm.inner, bindings);
 
     // XGrabServer(display);
     // ... rehome windows ...
@@ -1023,15 +1024,15 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 let combo = KeyCombo::from_x(keysym, state);
                 println!("{}", combo);
                 let proc = {
-                    let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                    let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                     wm.bindings[&combo].0 // XXX
                 };
-                scm_apply_1(proc, wm_scm, SCM_EOL);
+                scm_apply_1(proc, wm_scm.inner, SCM_EOL);
             }
             x11::xlib::ConfigureRequest => {
                 // Let windows do whatever they want if we haven't taken them over yet.
                 let ev = e.configure_request;
-                let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                 match wm.client_window_to_item_idx.get(&ev.window).copied() {
                     None => {
                         let mut changes = XWindowChanges {
@@ -1097,7 +1098,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 } = e.configure;
 
                 if window == root {
-                    let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                    let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                     let new_bounds = WindowBounds {
                         position: Default::default(),
                         content: AreaSize {
@@ -1114,11 +1115,11 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
             x11::xlib::MapRequest => {
                 let XMapRequestEvent { window, .. } = e.map_request;
 
-                let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                 let already_mapped = wm.client_window_to_item_idx.contains_key(&window);
 
                 if !already_mapped {
-                    let insert_cursor = scm_apply_1(place_new_window, wm_scm, SCM_EOL);
+                    let insert_cursor = scm_apply_1(place_new_window, wm_scm.inner, SCM_EOL);
                     let insert_cursor =
                         MoveOrReplace::deserialize(Deserializer { scm: insert_cursor })
                             .expect("XXX");
@@ -1171,7 +1172,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 XMapWindow(display, window);
             }
             x11::xlib::MapNotify => {
-                let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                 let ev = e.map;
                 if let Some(&idx) = wm.client_window_to_item_idx.get(&ev.window) {
                     if let Some(WindowData { client, .. }) = wm.layout.try_window_data_mut(idx) {
@@ -1184,7 +1185,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 wm.ensure_focus();
             }
             x11::xlib::UnmapNotify => {
-                let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                 let ev = e.unmap;
                 if let Some(&idx) = wm.client_window_to_item_idx.get(&ev.window) {
                     if let Some(WindowData {
@@ -1199,7 +1200,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
             }
             x11::xlib::DestroyNotify => {
                 let XDestroyWindowEvent { window, .. } = e.destroy_window;
-                let wm = get_foreign_object::<WmState>(wm_scm, WM_STATE_TYPE);
+                let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                 if let Entry::Occupied(oe) = wm.client_window_to_item_idx.entry(window) {
                     let idx = oe.remove();
                     if wm.layout.exists(ItemIdx::Window(idx)) {
@@ -1464,12 +1465,6 @@ unsafe extern "C" fn clear_bindings(state: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
-unsafe extern "C" fn drop_wm_state(state: SCM) {
-    let p = scm_foreign_object_ref(state, 0) as *const WmState;
-    let state = std::ptr::read(p);
-    std::mem::drop(state);
-}
-
 unsafe extern "C" fn dump_layout(state: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let s = format!("{}", serde_json::to_string_pretty(&wm.layout).unwrap());
@@ -1550,7 +1545,7 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     let wm_slots = scm_list_1(scm_from_utf8_symbol(
         CStr::from_bytes_with_nul(b"data\0").unwrap().as_ptr(),
     ));
-    WM_STATE_TYPE = scm_make_foreign_object_type(wm_name, wm_slots, Some(drop_wm_state));
+    WM_STATE_TYPE = scm_make_foreign_object_type(wm_name, wm_slots, None);
 
     let c = CStr::from_bytes_with_nul(b"fwm-run-wm\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, run_wm as *mut c_void);
