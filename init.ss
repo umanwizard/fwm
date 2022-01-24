@@ -22,6 +22,11 @@
            [entry (list-ref wps idx)])
       (string-append wp-dir entry))))
 
+(define (clear-wallpaper)
+  (set! wall-past '())
+  (set! wall-future (list (random-wallpaper)))
+  (set! wall-cur #f))
+
 (define wall-past '())
 
 (define wall-future (list (random-wallpaper)))
@@ -164,6 +169,10 @@
      (cons (fwm-parse-key-combo (string-append mod "+q")) (lambda (x) (exec "xscreensaver-command -lock")))
      (cons (fwm-parse-key-combo (string-append mod "+x")) (lambda (x) (set-wallpaper)))
      (cons (fwm-parse-key-combo (string-append mod "+y")) (lambda (x) (set-wallpaper-killing-future)))
+     (cons (fwm-parse-key-combo (string-append mod "+g")) (lambda (x)
+							    (clear-wallpaper)
+							    (set-wallpaper)
+							    ))
      (cons (fwm-parse-key-combo (string-append mod "+shift+x"))
 	   (lambda (x)
 	     (let ([wp (wall-back)])
