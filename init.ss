@@ -221,12 +221,18 @@
   (lambda (wm point)
     (when (eq? (car point) 'Window)
       (fwm-set-focus wm (list (cdr point))))))
-		    
+
+(define protected-points '())
 
 (fwm-run-wm
  (list
   (cons 'bindings  bindings)
   (cons 'place-new-window place-new-window)
   (cons 'on-point-changed focus-if-window)
+  (cons 'on-client-unmapped
+	(lambda (wm point)
+	  (if (not (member point protected-points))
+		   (fwm-kill-item-at wm point))
+	  ))
   )
  )

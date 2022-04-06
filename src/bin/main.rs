@@ -957,6 +957,10 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"place-new-window\0")),
     );
+    let on_client_unmapped = scm_assq_ref(
+        config,
+        scm_from_utf8_symbol(std::mem::transmute(b"on-client-unmapped\0"))
+    );
     let on_point_changed = ProtectedScm(scm_assq_ref(
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"on-point-changed\0")),
@@ -1003,6 +1007,20 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     // ... rehome windows ...
     // XUngrabServer(display);
 
+    let unmap = |wm: &mut WmState, window| {
+        if let Entry::Occupied(oe) = wm.client_window_to_item_idx.entry(window) {
+            let idx = oe.remove();
+            if wm.layout.exists(ItemIdx::Window(idx)) {
+                wm.layout
+                    .try_data_mut(ItemIdx::Window(idx))
+                    .unwrap()
+                    .unwrap_window()
+                    .client = None;
+            }
+            let point = wm.point.serialize(Serializer::default()).expect("XXX");
+            scm_apply_2(on_client_unmapped, wm_scm.inner, point, SCM_EOL);
+        }
+    };
     loop {
         let mut e = MaybeUninit::<XEvent>::uninit();
         XNextEvent(display, e.as_mut_ptr());
@@ -1177,32 +1195,13 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
             x11::xlib::UnmapNotify => {
                 let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                 let ev = e.unmap;
-                if let Some(&idx) = wm.client_window_to_item_idx.get(&ev.window) {
-                    if let Some(WindowData {
-                        client: Some(client),
-                        ..
-                    }) = wm.layout.try_window_data_mut(idx)
-                    {
-                        client.mapped = false;
-                    }
-                }
+                unmap(wm, ev.window);
                 wm.ensure_focus();
             }
             x11::xlib::DestroyNotify => {
                 let XDestroyWindowEvent { window, .. } = e.destroy_window;
                 let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                if let Entry::Occupied(oe) = wm.client_window_to_item_idx.entry(window) {
-                    let idx = oe.remove();
-                    if wm.layout.exists(ItemIdx::Window(idx)) {
-                        wm.layout
-                            .try_data_mut(ItemIdx::Window(idx))
-                            .unwrap()
-                            .unwrap_window()
-                            .client = None;
-                    }
-                }
-                // TODO - call a scheme function to see whether the user wants to kill the
-                // layout slot too
+                unmap(wm, window);
             }
             _ => {}
         }
