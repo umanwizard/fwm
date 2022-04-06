@@ -1017,7 +1017,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     .unwrap_window()
                     .client = None;
             }
-            let point = wm.point.serialize(Serializer::default()).expect("XXX");
+            let point = ItemIdx::Window(idx).serialize(Serializer::default()).expect("XXX");
             scm_apply_2(on_client_unmapped, wm_scm.inner, point, SCM_EOL);
         }
     };
@@ -1337,6 +1337,7 @@ unsafe extern "C" fn make_cursor_before(state: SCM, point: SCM) -> SCM {
 unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    info!("Killing item at {:?}", point);
     wm.do_and_recompute(|wm| {
         let topo_next = wm.layout.topological_next(wm.point);
         let actions = wm.layout.destroy(point);

@@ -1,8 +1,23 @@
+(setvbuf (current-output-port) 'line)
 (set! *random-state* (random-state-from-platform))
 (define at-point
-  (lambda (f)
+  (lambda fs
     (lambda (wm)
-      (f wm (fwm-get-point wm)))))
+      (let ([pt (fwm-get-point wm)])
+	(for-each (lambda (f) (f wm pt)) fs)))))
+
+;; https://stackoverflow.com/questions/26539585/how-to-display-multiple-parameters-in-r5rs-scheme
+(define (insert-between v xs)
+  (cond ((null? xs) xs)
+        ((null? (cdr xs)) xs)
+        (else (cons (car xs)
+                    (cons v (insert-between v (cdr xs)))))))
+(define (display-all . vs)
+  (for-each display (insert-between " " vs)))
+
+(define (println . vs)
+  (apply display-all vs)
+  (newline))
 
 (define terminal "~/.local/bin/sakura")
 (define exec
@@ -93,10 +108,7 @@
      [(eq? (car cursor) 'Into)
       (let ([container (assq-ref (cdr cursor) 'container)]
             [index (assq-ref (cdr cursor) 'index)])
-           (display container)
-           (display " ")
-           (display index)
-           (display "\n")
+	(println container index)
            (rust-option-to-scheme (fwm-nth-child wm container index)))])))
 
 (define get-cursor-or-default
@@ -123,8 +135,6 @@
   (lambda (wm dir)
     (let* ([cur (get-cursor-or-default wm)]
            [item (item-for-cursor wm cur)])
-      (display item)
-      (display "\n")
       (if item (fwm-set-cursor wm (list (make-split-cursor item dir)))))))
       
 (define place-layout-slot
@@ -139,6 +149,32 @@
 (define copy-ss
   (lambda ()
     (exec "scrot -s -f '/tmp/%F_%T_$wx$h.png' -e 'xclip -selection clipboard -target image/png -i $f'")))
+
+(define (foreach-leaf f wm pt)
+  (define (is-leaf pt)
+    (eq? (car pt) 'Window))
+  (let* ([descendants (fwm-all-descendants wm pt)]
+	 [leaves (filter is-leaf descendants)])
+    (println "Foreach leaves: " leaves)
+    (for-each
+     f
+     leaves)
+    ))
+
+(define (request-kill-all wm pt)
+  (foreach-leaf (lambda (leaf)
+		  (fwm-request-kill-client-at wm (cdr leaf)))
+		wm pt))
+
+(define (protect-all wm pt)
+  (foreach-leaf (lambda (leaf)
+		  (set! protected-points (cons leaf protected-points)))
+        wm pt))
+
+(define (unprotect-all wm pt)
+  (foreach-leaf (lambda (leaf)
+		  (delete! pt protected-points))
+        wm pt))
 
 (define bindings
   (let ([mod "mod3"])
@@ -159,6 +195,7 @@
      (cons (fwm-parse-key-combo (string-append mod "+shift+d")) (lambda (x) (fwm-cursor x 'Child)))
      (cons (fwm-parse-key-combo (string-append mod "+shift+period")) (lambda (x) (quit)))
      (cons (fwm-parse-key-combo (string-append mod "+p")) fwm-dump-layout)
+     (cons (fwm-parse-key-combo (string-append mod "+shift+p")) (lambda (x) (println protected-points)))
      (cons (fwm-parse-key-combo (string-append mod "+v")) (lambda (wm) (set-split wm 'Down)))
      (cons (fwm-parse-key-combo (string-append mod "+m")) (lambda (wm) (set-split wm 'Right)))
      (cons (fwm-parse-key-combo (string-append mod "+Escape")) (lambda (wm) (fwm-set-cursor wm '())))
@@ -180,17 +217,10 @@
 		   (do-set-wp wp)))))
      (cons (fwm-parse-key-combo (string-append mod "+Print")) (lambda (_) (copy-ss)))
      (cons (fwm-parse-key-combo (string-append mod "+z"))
-	   (at-point
-	    (lambda (wm pt)
-	      (define (is-leaf pt)
-		(eq? (car pt) 'Window))
-	      (let* ([descendants (fwm-all-descendants wm pt)]
-		     [leaves (filter is-leaf descendants)])
-		(for-each
-		 (lambda (leaf)
-		   (fwm-request-kill-client-at wm (cdr leaf)))
-		 leaves)
-		))))
+	   (at-point unprotect-all request-kill-all
+		     ))
+     (cons (fwm-parse-key-combo (string-append mod "+shift+z"))
+	   (at-point protect-all request-kill-all))
      )
     )
   )
@@ -231,6 +261,7 @@
   (cons 'on-point-changed focus-if-window)
   (cons 'on-client-unmapped
 	(lambda (wm point)
+	  (println "on-client-unmapped: " point)
 	  (if (not (member point protected-points))
 		   (fwm-kill-item-at wm point))
 	  ))
