@@ -173,7 +173,7 @@
 
 (define (unprotect-all wm pt)
   (foreach-leaf (lambda (leaf)
-		  (delete! pt protected-points))
+          (set! protected-points (delete leaf protected-points))
         wm pt))
 
 (define bindings
