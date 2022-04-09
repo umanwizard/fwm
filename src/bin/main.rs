@@ -1,3 +1,5 @@
+use byteorder::NativeEndian;
+use byteorder::WriteBytesExt;
 use fwm::ChildLocation;
 
 use ::fwm::AreaSize;
@@ -15,8 +17,14 @@ use fwm::SlotInContainer;
 
 use fwm::scheme::Deserializer;
 use fwm::scheme::Serializer;
+use libc::umask;
 use log::error;
 use log::info;
+use mio::unix::SourceFd;
+use mio::Events;
+use mio::Interest;
+use mio::Poll;
+use mio::Token;
 use rust_guile::scm_apply_1;
 use rust_guile::scm_apply_2;
 use rust_guile::scm_assert_foreign_object_type;
@@ -76,6 +84,7 @@ use x11::xlib::XClearWindow;
 use x11::xlib::XClientMessageEvent;
 use x11::xlib::XConfigureEvent;
 use x11::xlib::XConfigureWindow;
+use x11::xlib::XConnectionNumber;
 use x11::xlib::XCreateSimpleWindow;
 use x11::xlib::XDefaultRootWindow;
 use x11::xlib::XDestroyWindow;
@@ -94,6 +103,7 @@ use x11::xlib::XMapWindow;
 use x11::xlib::XMoveResizeWindow;
 use x11::xlib::XNextEvent;
 use x11::xlib::XOpenDisplay;
+use x11::xlib::XPending;
 use x11::xlib::XRaiseWindow;
 use x11::xlib::XScreenCount;
 use x11::xlib::XScreenOfDisplay;
@@ -117,11 +127,16 @@ use std::ffi::c_void;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Debug;
+use std::io::Read;
+use std::io::Write;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::mem::MaybeUninit;
+use std::os::raw::c_char;
+use std::os::unix::io::RawFd;
 use std::ptr::null;
 use std::ptr::null_mut;
+use std::time::Duration;
 
 #[derive(Debug)]
 struct ProtectedScm(SCM);
@@ -948,7 +963,17 @@ unsafe extern "C" fn x_io_err(_display: *mut Display) -> i32 {
     0
 }
 
+const XLIB_CONN: Token = Token(0);
+const FEEDBACK: Token = Token(1);
+
+use mio::unix::pipe::Receiver as MioReceiver;
+use mio::unix::pipe::Sender as MioSender;
+
+static FEEDBACK_TX: once_cell::sync::OnceCell<MioSender> = once_cell::sync::OnceCell::new();
+
 unsafe extern "C" fn run_wm(config: SCM) -> SCM {
+    let (feedback_tx, mut feedback_rx) = mio::unix::pipe::new().unwrap();
+    FEEDBACK_TX.set(feedback_tx).expect("already ran run_wm!");
     let bindings = scm_assq_ref(
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"bindings\0")),
@@ -959,7 +984,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     );
     let on_client_unmapped = scm_assq_ref(
         config,
-        scm_from_utf8_symbol(std::mem::transmute(b"on-client-unmapped\0"))
+        scm_from_utf8_symbol(std::mem::transmute(b"on-client-unmapped\0")),
     );
     let on_point_changed = ProtectedScm(scm_assq_ref(
         config,
@@ -1017,193 +1042,224 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     .unwrap_window()
                     .client = None;
             }
-            let point = ItemIdx::Window(idx).serialize(Serializer::default()).expect("XXX");
+            let point = ItemIdx::Window(idx)
+                .serialize(Serializer::default())
+                .expect("XXX");
             scm_apply_2(on_client_unmapped, wm_scm.inner, point, SCM_EOL);
         }
     };
+    let display_fd = XConnectionNumber(display) as RawFd;
+    let mut poll = Poll::new().unwrap();
+    let mut events = Events::with_capacity(1024);
+    poll.registry()
+        .register(
+            &mut SourceFd(&display_fd),
+            XLIB_CONN,
+            Interest::READABLE | Interest::WRITABLE,
+        )
+        .unwrap();
+    poll.registry()
+        .register(&mut feedback_rx, FEEDBACK, Interest::READABLE)
+        .unwrap();
+
     loop {
         let mut e = MaybeUninit::<XEvent>::uninit();
-        XNextEvent(display, e.as_mut_ptr());
-        let e = e.assume_init();
-        info!("Event: {:?}", e);
-        match e.type_ {
-            x11::xlib::KeyPress => {
-                let XKeyEvent { keycode, state, .. } = e.key;
-                let keysym = XKeycodeToKeysym(display, keycode.try_into().unwrap(), 0); // TODO - figure out what the zero means here.
-
-                let combo = KeyCombo::from_x(keysym, state);
-                let proc = {
-                    let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                    wm.bindings[&combo].0 // XXX
-                };
-                scm_apply_1(proc, wm_scm.inner, SCM_EOL);
-            }
-            x11::xlib::ConfigureRequest => {
-                // Let windows do whatever they want if we haven't taken them over yet.
-                let ev = e.configure_request;
-                let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                match wm.client_window_to_item_idx.get(&ev.window).copied() {
-                    None => {
-                        let mut changes = XWindowChanges {
-                            x: ev.x,
-                            y: ev.y,
-                            width: ev.width,
-                            height: ev.height,
-                            border_width: ev.border_width,
-                            sibling: ev.above, // no clue, but this is what basic_wm does.
-                            stack_mode: ev.detail, // idem
-                        };
-                        XConfigureWindow(
-                            display,
-                            ev.window,
-                            ev.value_mask.try_into().unwrap(),
-                            &mut changes as *mut XWindowChanges,
-                        );
-                    }
-                    Some(w_idx) => {
-                        // We already control you -- sorry, but you don't get to fight with us about position/size.
-                        // Notify you of your real coordinates.
-                        let data = wm.layout.try_window_data(w_idx).unwrap();
-                        let idx = ItemIdx::Window(w_idx);
-                        let WindowBounds { content, position } = wm.layout.bounds(idx);
-
-                        let inner_size = outer_to_inner_size(content, &data.template);
-
-                        let ev2 = XConfigureEvent {
-                            type_: ConfigureNotify,
-                            serial: 0,
-                            send_event: 1,
-                            display,
-                            event: ev.window,
-                            window: ev.window,
-                            x: (position.x + data.template.left.width).try_into().unwrap(),
-                            y: (position.y + data.template.up.width).try_into().unwrap(),
-                            width: inner_size.width.try_into().unwrap(),
-                            height: inner_size.height.try_into().unwrap(),
-                            border_width: 0,
-                            above: 0,
-                            override_redirect: 0, // ??? XXX
-                        };
-                        let mut ev2 = XEvent { configure: ev2 };
-
-                        let status = XSendEvent(
-                            display,
-                            ev.window,
-                            1,
-                            StructureNotifyMask,
-                            &mut ev2 as *mut XEvent,
-                        );
-                    }
+        while poll.poll(&mut events, None).is_err() {}
+        for mio_ev in &events {
+            if mio_ev.token() == FEEDBACK {
+                use byteorder::{NativeEndian, ReadBytesExt};
+                while let Ok(f) = feedback_rx.read_u64::<NativeEndian>() {
+                    let f = f as SCM;
+                    scm_apply_1(f, wm_scm.inner, SCM_EOL);
                 }
             }
+        }
+        while XPending(display) > 0 {
+            XNextEvent(display, e.as_mut_ptr());
+            let e = e.assume_init();
+            info!("Event: {:?}", e);
+            match e.type_ {
+                x11::xlib::KeyPress => {
+                    let XKeyEvent { keycode, state, .. } = e.key;
+                    let keysym = XKeycodeToKeysym(display, keycode.try_into().unwrap(), 0); // TODO - figure out what the zero means here.
 
-            x11::xlib::ConfigureNotify => {
-                let XConfigureEvent {
-                    window,
-                    width,
-                    height,
-                    ..
-                } = e.configure;
-
-                if window == root {
-                    let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                    let new_bounds = WindowBounds {
-                        position: Default::default(),
-                        content: AreaSize {
-                            width: width.try_into().unwrap(),
-                            height: height.try_into().unwrap(),
-                        },
+                    let combo = KeyCombo::from_x(keysym, state);
+                    let proc = {
+                        let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
+                        wm.bindings[&combo].0 // XXX
                     };
-                    if new_bounds != wm.layout.root_bounds() {
-                        wm.do_and_recompute(|wm| wm.layout.resize(new_bounds))
-                    }
+                    scm_apply_1(proc, wm_scm.inner, SCM_EOL);
                 }
-            }
-
-            x11::xlib::MapRequest => {
-                let XMapRequestEvent { window, .. } = e.map_request;
-
-                let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                let already_mapped = wm.client_window_to_item_idx.contains_key(&window);
-
-                if !already_mapped {
-                    let insert_cursor = scm_apply_1(place_new_window, wm_scm.inner, SCM_EOL);
-                    let insert_cursor =
-                        MoveOrReplace::deserialize(Deserializer { scm: insert_cursor })
-                            .expect("XXX");
-                    wm.do_and_recompute(|wm| match insert_cursor {
-                        MoveOrReplace::Move(insert_cursor) => {
-                            let decorations = make_decorations(display, root);
-                            let w_idx = wm.layout.alloc_window(WindowData {
-                                client: Some(X11ClientWindowData {
-                                    window,
-                                    mapped: false,
-                                }),
-                                decorations,
-                                template: BASIC_DECO,
-                            });
-                            wm.client_window_to_item_idx.insert(window, w_idx);
-                            let actions = wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
-                            wm.point = ItemIdx::Window(w_idx);
-                            XRaiseWindow(wm.display, window);
-                            actions
-                        }
-                        MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
-                            let old_bounds = wm.layout.bounds(ItemIdx::Window(w_idx));
-
-                            wm.client_window_to_item_idx.insert(window, w_idx);
-                            wm.point = ItemIdx::Window(w_idx);
-                            let old_client = std::mem::replace(
-                                &mut wm
-                                    .layout
-                                    .try_data_mut(wm.point)
-                                    .unwrap()
-                                    .unwrap_window()
-                                    .client,
-                                Some(X11ClientWindowData {
-                                    window,
-                                    mapped: false,
-                                }),
+                x11::xlib::ConfigureRequest => {
+                    // Let windows do whatever they want if we haven't taken them over yet.
+                    let ev = e.configure_request;
+                    let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
+                    match wm.client_window_to_item_idx.get(&ev.window).copied() {
+                        None => {
+                            let mut changes = XWindowChanges {
+                                x: ev.x,
+                                y: ev.y,
+                                width: ev.width,
+                                height: ev.height,
+                                border_width: ev.border_width,
+                                sibling: ev.above, // no clue, but this is what basic_wm does.
+                                stack_mode: ev.detail, // idem
+                            };
+                            XConfigureWindow(
+                                display,
+                                ev.window,
+                                ev.value_mask.try_into().unwrap(),
+                                &mut changes as *mut XWindowChanges,
                             );
-                            XRaiseWindow(wm.display, window);
-                            if let Some(X11ClientWindowData { window, mapped: _ }) = old_client {
-                                XDestroyWindow(wm.display, window);
-                            }
-                            vec![LayoutAction::NewBounds {
-                                idx: wm.point,
-                                bounds: old_bounds,
-                            }]
                         }
-                        MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!(),
-                    });
-                }
-                XMapWindow(display, window);
-            }
-            x11::xlib::MapNotify => {
-                let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                let ev = e.map;
-                if let Some(&idx) = wm.client_window_to_item_idx.get(&ev.window) {
-                    if let Some(WindowData { client, .. }) = wm.layout.try_window_data_mut(idx) {
-                        let mut client = client
-                            .as_mut()
-                            .expect("Layout out of sync with client_window_to_item_idx");
-                        client.mapped = true;
+                        Some(w_idx) => {
+                            // We already control you -- sorry, but you don't get to fight with us about position/size.
+                            // Notify you of your real coordinates.
+                            let data = wm.layout.try_window_data(w_idx).unwrap();
+                            let idx = ItemIdx::Window(w_idx);
+                            let WindowBounds { content, position } = wm.layout.bounds(idx);
+
+                            let inner_size = outer_to_inner_size(content, &data.template);
+
+                            let ev2 = XConfigureEvent {
+                                type_: ConfigureNotify,
+                                serial: 0,
+                                send_event: 1,
+                                display,
+                                event: ev.window,
+                                window: ev.window,
+                                x: (position.x + data.template.left.width).try_into().unwrap(),
+                                y: (position.y + data.template.up.width).try_into().unwrap(),
+                                width: inner_size.width.try_into().unwrap(),
+                                height: inner_size.height.try_into().unwrap(),
+                                border_width: 0,
+                                above: 0,
+                                override_redirect: 0, // ??? XXX
+                            };
+                            let mut ev2 = XEvent { configure: ev2 };
+
+                            let status = XSendEvent(
+                                display,
+                                ev.window,
+                                1,
+                                StructureNotifyMask,
+                                &mut ev2 as *mut XEvent,
+                            );
+                        }
                     }
                 }
-                wm.ensure_focus();
+
+                x11::xlib::ConfigureNotify => {
+                    let XConfigureEvent {
+                        window,
+                        width,
+                        height,
+                        ..
+                    } = e.configure;
+
+                    if window == root {
+                        let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
+                        let new_bounds = WindowBounds {
+                            position: Default::default(),
+                            content: AreaSize {
+                                width: width.try_into().unwrap(),
+                                height: height.try_into().unwrap(),
+                            },
+                        };
+                        if new_bounds != wm.layout.root_bounds() {
+                            wm.do_and_recompute(|wm| wm.layout.resize(new_bounds))
+                        }
+                    }
+                }
+
+                x11::xlib::MapRequest => {
+                    let XMapRequestEvent { window, .. } = e.map_request;
+
+                    let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
+                    let already_mapped = wm.client_window_to_item_idx.contains_key(&window);
+
+                    if !already_mapped {
+                        let insert_cursor = scm_apply_1(place_new_window, wm_scm.inner, SCM_EOL);
+                        let insert_cursor =
+                            MoveOrReplace::deserialize(Deserializer { scm: insert_cursor })
+                                .expect("XXX");
+                        wm.do_and_recompute(|wm| match insert_cursor {
+                            MoveOrReplace::Move(insert_cursor) => {
+                                let decorations = make_decorations(display, root);
+                                let w_idx = wm.layout.alloc_window(WindowData {
+                                    client: Some(X11ClientWindowData {
+                                        window,
+                                        mapped: false,
+                                    }),
+                                    decorations,
+                                    template: BASIC_DECO,
+                                });
+                                wm.client_window_to_item_idx.insert(window, w_idx);
+                                let actions =
+                                    wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
+                                wm.point = ItemIdx::Window(w_idx);
+                                XRaiseWindow(wm.display, window);
+                                actions
+                            }
+                            MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
+                                let old_bounds = wm.layout.bounds(ItemIdx::Window(w_idx));
+
+                                wm.client_window_to_item_idx.insert(window, w_idx);
+                                wm.point = ItemIdx::Window(w_idx);
+                                let old_client = std::mem::replace(
+                                    &mut wm
+                                        .layout
+                                        .try_data_mut(wm.point)
+                                        .unwrap()
+                                        .unwrap_window()
+                                        .client,
+                                    Some(X11ClientWindowData {
+                                        window,
+                                        mapped: false,
+                                    }),
+                                );
+                                XRaiseWindow(wm.display, window);
+                                if let Some(X11ClientWindowData { window, mapped: _ }) = old_client
+                                {
+                                    XDestroyWindow(wm.display, window);
+                                }
+                                vec![LayoutAction::NewBounds {
+                                    idx: wm.point,
+                                    bounds: old_bounds,
+                                }]
+                            }
+                            MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!(),
+                        });
+                    }
+                    XMapWindow(display, window);
+                }
+                x11::xlib::MapNotify => {
+                    let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
+                    let ev = e.map;
+                    if let Some(&idx) = wm.client_window_to_item_idx.get(&ev.window) {
+                        if let Some(WindowData { client, .. }) = wm.layout.try_window_data_mut(idx)
+                        {
+                            let mut client = client
+                                .as_mut()
+                                .expect("Layout out of sync with client_window_to_item_idx");
+                            client.mapped = true;
+                        }
+                    }
+                    wm.ensure_focus();
+                }
+                x11::xlib::UnmapNotify => {
+                    let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
+                    let ev = e.unmap;
+                    unmap(wm, ev.window);
+                    wm.ensure_focus();
+                }
+                x11::xlib::DestroyNotify => {
+                    let XDestroyWindowEvent { window, .. } = e.destroy_window;
+                    let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
+                    unmap(wm, window);
+                }
+                _ => {}
             }
-            x11::xlib::UnmapNotify => {
-                let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                let ev = e.unmap;
-                unmap(wm, ev.window);
-                wm.ensure_focus();
-            }
-            x11::xlib::DestroyNotify => {
-                let XDestroyWindowEvent { window, .. } = e.destroy_window;
-                let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                unmap(wm, window);
-            }
-            _ => {}
         }
     }
 }
@@ -1520,6 +1576,12 @@ unsafe extern "C" fn all_descendants(state: SCM, point: SCM) -> SCM {
     result_list
 }
 
+unsafe extern "C" fn do_on_main_thread(f: SCM) -> SCM {
+    let mut tx = FEEDBACK_TX.get().expect("wm not initialized!");
+    tx.write_u64::<NativeEndian>(f as u64).unwrap();
+    SCM_UNSPECIFIED
+}
+
 // TODO - codegen this, as well as translating Scheme objects to Rust objects in the function bodies
 // (similar to what we did in PyTorch)
 unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
@@ -1585,14 +1647,54 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, all_descendants as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-request-kill-client-at\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, request_kill_client_at as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-mt\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, do_on_main_thread as *mut c_void);
 
     std::ptr::null_mut()
 }
 
+fn c(s: &[u8]) -> *const c_char {
+    CStr::from_bytes_with_nul(s).unwrap().as_ptr()
+}
+
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+struct Args {
+    #[clap(long)]
+    init: String,
+}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let args = Args::parse();
+    let mut init = args.init;
+    init.push(0 as char);
     unsafe {
+        let old_umask = umask(0);
+        if old_umask & 7 == 7 {
+            panic!("Umask is {:o} -- anyone is able to access the command socket and control the system! Refusing to run.", old_umask);
+        }
+        umask(old_umask);
+        let mut socket_path = std::env::temp_dir();
+        socket_path.push(format!("fwm.{}", std::process::id()));
+        info!("Socket path: {}", socket_path.display());
+        let listen_arg = format!(
+            "--listen={}\0",
+            socket_path
+                .as_os_str()
+                .to_str()
+                .expect("Weird characters in TMPDIR ????")
+        );
+
+        let args = &[
+            c(b"fwm-client\0"),
+            c(listen_arg.as_bytes()),
+            c(init.as_bytes()),
+            null(),
+        ];
         scm_with_guile(Some(scheme_setup), null_mut());
-        scm_shell(0, null_mut());
+        // XXX is this sound? Can argv be modified by guile?
+        scm_shell(args.len() as i32 - 1, args.as_ptr() as *mut *mut c_char);
     }
 }
