@@ -785,7 +785,10 @@ where
         self.root_bounds = bounds;
         let mut out = vec![];
         self.layout(ItemIdx::Container(0), &mut out);
-        info!("layout actions from resize: {:#?}", out);
+        out.push(LayoutAction::NewBounds {
+            idx: ItemIdx::Container(0),
+            bounds,
+        });
         out
     }
     pub fn parent_container(&self, item: ItemIdx) -> Option<usize> {
