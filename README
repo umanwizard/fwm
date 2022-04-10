@@ -1,3 +1,4 @@
-Partially working tiling WM in scheme/rust.
+Tiling window manager in Rust, extensible and configurable with Scheme.
 
-Under active development and not really usable yet.
+This software is in a pre-alpha state. You should only use it if you are
+willing to tinker with the code, tolerate crashes, etc.
