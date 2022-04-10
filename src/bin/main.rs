@@ -1151,8 +1151,6 @@ unsafe fn get_strut(display: *mut Display, window: Window) -> Option<StrutPartia
 }
 
 unsafe extern "C" fn run_wm(config: SCM) -> SCM {
-    let (feedback_tx, mut feedback_rx) = mio::unix::pipe::new().unwrap();
-    FEEDBACK_TX.set(feedback_tx).expect("already ran run_wm!");
     let bindings = scm_assq_ref(
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"bindings\0")),
@@ -1172,6 +1170,10 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     let on_button1_pressed = scm_assq_ref(
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"on-button1-pressed\0")),
+    );
+    let after_start = scm_assq_ref(
+        config,
+        scm_from_utf8_symbol(std::mem::transmute(b"after-start\0")),
     );
     let display = XOpenDisplay(null());
     assert!(!display.is_null());
@@ -1236,6 +1238,10 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
             wm.do_resize()
         }
     };
+    let (feedback_tx, mut feedback_rx) = mio::unix::pipe::new().unwrap();
+    FEEDBACK_TX.set(feedback_tx).expect("already ran run_wm!");
+    do_on_main_thread(after_start);
+
     let display_fd = XConnectionNumber(display) as RawFd;
     let mut poll = Poll::new().unwrap();
     let mut events = Events::with_capacity(1024);

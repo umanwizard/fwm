@@ -28,6 +28,7 @@
 (system "xmodmap ~/.Xmodmap")
 (exec "xscreensaver -no-splash")
 
+
 (define random-wallpaper
   (lambda ()
     (use-modules (ice-9 ftw))
@@ -294,6 +295,9 @@
           (println "on-button1-pressed:" point)
           (if point
               (fwm-set-point wm point)))))
-  )
- )
+  
+ (cons 'after-start
+       (lambda (_)
+	 (exec "xmobar -bB white -a right -F blue -t '%KJFK%' -c '[Run Weather \"KJFK\" [] 36000]' -f 'xft:Bitstream Vera Sans Mono:size=24'")))
+ ))
 
