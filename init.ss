@@ -284,10 +284,16 @@
   (cons 'on-point-changed focus-if-window)
   (cons 'on-client-unmapped
 	(lambda (wm point)
-	  (println "on-client-unmapped: " point)
+	  (println "on-client-unmapped:" point)
 	  (if (not (member point protected-points))
 		   (fwm-kill-item-at wm point))
 	  ))
+  (cons 'on-button1-pressed
+	(lambda (wm point)
+      (let ([point (rust-option-to-scheme point)])
+          (println "on-button1-pressed:" point)
+          (if point
+              (fwm-set-point wm point)))))
   )
  )
 

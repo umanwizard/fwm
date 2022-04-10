@@ -38,6 +38,12 @@ pub struct WindowBounds {
     pub position: Position,
 }
 
+impl WindowBounds {
+    pub fn contains(&self, position: Position) -> bool {
+        self.position.x <= position.x && self.position.y <= position.y && position.x < (self.position.x + self.content.width) && position.y < (self.position.y + self.content.height)
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize, Hash)]
 pub enum ItemIdx {
     Window(usize),
@@ -350,6 +356,17 @@ where
 
     pub fn iter_descendants(&self, item: ItemIdx) -> DescendantsIter<'_, W, C, CCtor> {
         DescendantsIter::new(self, item)
+    }
+
+    pub fn window_at(&self, position: Position) -> Option<usize> {
+        for (w_idx, w) in self.windows.iter().enumerate() {
+            if let Some(Window { bounds, ..}) = w {
+                if bounds.contains(position) {
+                    return Some(w_idx);
+                }
+            }
+        }
+        None
     }
     /// Put a container where `split` was, and put `inserted` and `split` into that container, their order controlled by `inserted_first`.
     /// Returns the topmost modified container, but does not itself do layout.

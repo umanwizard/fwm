@@ -8,6 +8,7 @@ use ::fwm::ItemIdx;
 use ::fwm::Layout;
 use ::fwm::LayoutAction;
 use ::fwm::MoveCursor;
+use fwm::Position;
 use ::fwm::WindowBounds;
 use fwm::Constructor;
 use fwm::ItemAndData;
@@ -57,6 +58,9 @@ use rust_guile::SCM_UNSPECIFIED;
 use serde::Deserialize;
 use serde::Serialize;
 use x11::xlib::Atom;
+use x11::xlib::Button1;
+use x11::xlib::ButtonPressMask;
+use x11::xlib::ButtonReleaseMask;
 use x11::xlib::CWBorderWidth;
 use x11::xlib::CWHeight;
 use x11::xlib::CWWidth;
@@ -67,6 +71,7 @@ use x11::xlib::ControlMask;
 use x11::xlib::CurrentTime;
 use x11::xlib::Display;
 use x11::xlib::GrabModeAsync;
+use x11::xlib::GrabModeSync;
 use x11::xlib::KeySym;
 use x11::xlib::LockMask;
 use x11::xlib::Mod1Mask;
@@ -75,11 +80,15 @@ use x11::xlib::Mod3Mask;
 use x11::xlib::Mod4Mask;
 use x11::xlib::Mod5Mask;
 use x11::xlib::PointerRoot;
+use x11::xlib::ReplayPointer;
 use x11::xlib::RevertToPointerRoot;
 use x11::xlib::ShiftMask;
 use x11::xlib::StructureNotifyMask;
 use x11::xlib::SubstructureNotifyMask;
 use x11::xlib::SubstructureRedirectMask;
+use x11::xlib::XAllowEvents;
+use x11::xlib::XButtonEvent;
+use x11::xlib::XButtonPressedEvent;
 use x11::xlib::XClearWindow;
 use x11::xlib::XClientMessageEvent;
 use x11::xlib::XConfigureEvent;
@@ -92,6 +101,7 @@ use x11::xlib::XDestroyWindowEvent;
 use x11::xlib::XErrorEvent;
 use x11::xlib::XEvent;
 use x11::xlib::XGetWMProtocols;
+use x11::xlib::XGrabButton;
 use x11::xlib::XGrabKey;
 use x11::xlib::XInternAtom;
 use x11::xlib::XKeyEvent;
@@ -990,6 +1000,10 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"on-point-changed\0")),
     ));
+    let on_button1_pressed = scm_assq_ref(
+        config,
+        scm_from_utf8_symbol(std::mem::transmute(b"on-button1-pressed\0")),
+    );    
     let display = XOpenDisplay(null());
     assert!(!display.is_null());
     XSetErrorHandler(Some(x_err));
@@ -1062,6 +1076,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         .register(&mut feedback_rx, FEEDBACK, Interest::READABLE)
         .unwrap();
 
+    XGrabButton(display, Button1, 0, root, 0, (ButtonPressMask | ButtonReleaseMask) as u32, GrabModeSync, GrabModeAsync, 0, 0);
     loop {
         let mut e = MaybeUninit::<XEvent>::uninit();
         while poll.poll(&mut events, None).is_err() {}
@@ -1089,6 +1104,20 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                         wm.bindings[&combo].0 // XXX
                     };
                     scm_apply_1(proc, wm_scm.inner, SCM_EOL);
+                }
+                x11::xlib::ButtonPress => {
+                    let XButtonEvent { type_, serial, send_event, display, window, root, subwindow, time, x, y, x_root, y_root, state, button, same_screen } = e.button;
+                    let position = Position { x: x_root as usize, y: y_root as usize };
+                    let w_idx = {
+                        let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
+                        wm.layout.window_at(position)
+                    };
+                    let point = w_idx.map(|w_idx| ItemIdx::Window(w_idx));
+                    info!("Button pressed at position {:?}, corresponding point {:?}", position, point);
+                    scm_apply_2(on_button1_pressed, wm_scm.inner, point.serialize(Serializer::default()).unwrap(), SCM_EOL);
+                    // https://stackoverflow.com/questions/46288251/capture-button-events-in-xlib-then-passing-the-event-to-the-client
+                    XAllowEvents(display, ReplayPointer, time);
+                    XSync(display, 0);
                 }
                 x11::xlib::ConfigureRequest => {
                     // Let windows do whatever they want if we haven't taken them over yet.
@@ -1313,6 +1342,16 @@ unsafe extern "C" fn cursor(state: SCM, dir: SCM) -> SCM {
 unsafe extern "C" fn get_point(state: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     wm.point.serialize(Serializer::default()).expect("XXX")
+}
+
+unsafe extern "C" fn set_point(state: SCM, point: SCM) -> SCM {
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    wm.do_and_recompute(|wm| {
+        wm.point = point;
+        None
+    });
+    SCM_UNSPECIFIED
 }
 
 unsafe extern "C" fn get_cursor(state: SCM) -> SCM {
@@ -1639,6 +1678,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, cursor as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-get-point\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, get_point as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-set-point\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, set_point as *mut c_void);    
     let c = CStr::from_bytes_with_nul(b"fwm-occupied?\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, is_occupied as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-nearest-container\0").unwrap();
