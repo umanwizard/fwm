@@ -455,32 +455,52 @@ where
         }
     }
     pub fn get_content_length(&self, item: ItemIdx) -> Option<usize> {
-        self.slot_in_container(item).map(|SlotInContainer { c_idx, index, parent_strat }| {
-            let bounds = self.bounds(item);
-            match parent_strat {
-                LayoutStrategy::Horizontal => bounds.content.width,
-                LayoutStrategy::Vertical => bounds.content.height,
-            }
-        })
+        self.slot_in_container(item).map(
+            |SlotInContainer {
+                 c_idx,
+                 index,
+                 parent_strat,
+             }| {
+                let bounds = self.bounds(item);
+                match parent_strat {
+                    LayoutStrategy::Horizontal => bounds.content.width,
+                    LayoutStrategy::Vertical => bounds.content.height,
+                }
+            },
+        )
     }
-    pub fn set_content_length(&mut self, item: ItemIdx, new_length: usize) -> Vec<LayoutAction<W, C>>{
+    pub fn set_content_length(
+        &mut self,
+        item: ItemIdx,
+        new_length: usize,
+    ) -> Vec<LayoutAction<W, C>> {
         let mut out = vec![];
         info!("Setting length of {:?} to {}", item, new_length);
-        if let Some(SlotInContainer { c_idx, index, parent_strat }) = self.slot_in_container(item) {
+        if let Some(SlotInContainer {
+            c_idx,
+            index,
+            parent_strat,
+        }) = self.slot_in_container(item)
+        {
             let available_length = self.ctr_available_length(c_idx);
             let new_length = new_length.min(available_length);
             let remaining_length = available_length - new_length;
             let children = &mut self.containers[c_idx].as_mut().unwrap().children;
-            let total_weight_of_others: f64 = children.iter().filter_map(|&(weight, child)| {
-                if child == item {
-                    None
-                } else {
-                    Some(weight)
-                }
-            }).sum();
+            let total_weight_of_others: f64 = children
+                .iter()
+                .filter_map(
+                    |&(weight, child)| {
+                        if child == item {
+                            None
+                        } else {
+                            Some(weight)
+                        }
+                    },
+                )
+                .sum();
             for (weight, child) in children {
                 if *child == item {
-                    *weight = new_length as f64;                    
+                    *weight = new_length as f64;
                 } else {
                     *weight = (*weight / total_weight_of_others) * (remaining_length as f64);
                 }
@@ -602,13 +622,23 @@ where
                 Direction::Left => self.split(from, item, LayoutStrategy::Horizontal, true),
                 Direction::Right => self.split(from, item, LayoutStrategy::Horizontal, false),
             },
-            MoveCursor::Into { container: c_idx, index } => {
+            MoveCursor::Into {
+                container: c_idx,
+                index,
+            } => {
                 let container = self.containers[c_idx].as_mut().unwrap();
                 let n_children = container.children.len();
-                let avg_weight = if n_children > 0 { container.children.iter().map(|(weight, _child)| *weight).sum::<f64>() / (n_children as f64) } else { 1.0 };
-                container
-                    .children
-                    .insert(index, (avg_weight, from));
+                let avg_weight = if n_children > 0 {
+                    container
+                        .children
+                        .iter()
+                        .map(|(weight, _child)| *weight)
+                        .sum::<f64>()
+                        / (n_children as f64)
+                } else {
+                    1.0
+                };
+                container.children.insert(index, (avg_weight, from));
                 c_idx
             }
         };
