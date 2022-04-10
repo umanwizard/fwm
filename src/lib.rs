@@ -40,7 +40,10 @@ pub struct WindowBounds {
 
 impl WindowBounds {
     pub fn contains(&self, position: Position) -> bool {
-        self.position.x <= position.x && self.position.y <= position.y && position.x < (self.position.x + self.content.width) && position.y < (self.position.y + self.content.height)
+        self.position.x <= position.x
+            && self.position.y <= position.y
+            && position.x < (self.position.x + self.content.width)
+            && position.y < (self.position.y + self.content.height)
     }
 }
 
@@ -360,7 +363,7 @@ where
 
     pub fn window_at(&self, position: Position) -> Option<usize> {
         for (w_idx, w) in self.windows.iter().enumerate() {
-            if let Some(Window { bounds, ..}) = w {
+            if let Some(Window { bounds, .. }) = w {
                 if bounds.contains(position) {
                     return Some(w_idx);
                 }
@@ -772,12 +775,17 @@ where
     pub fn windows<'a>(&'a self) -> impl Iterator<Item = &'a Window<W>> {
         self.windows.iter().filter_map(Option::as_ref)
     }
-    pub fn resize(&mut self, bounds: WindowBounds) -> Vec<LayoutAction<W, C>> {
+    pub fn resize(&mut self, bounds: WindowBounds) -> Vec<LayoutAction<W, C>>
+    where
+        C: std::fmt::Debug,
+        W: std::fmt::Debug,
+    {
         info!("Resizing in wb: {:?}", bounds);
         self.containers[0].as_mut().unwrap().bounds = bounds;
         self.root_bounds = bounds;
         let mut out = vec![];
         self.layout(ItemIdx::Container(0), &mut out);
+        info!("layout actions from resize: {:#?}", out);
         out
     }
     pub fn parent_container(&self, item: ItemIdx) -> Option<usize> {

@@ -1,5 +1,7 @@
 use byteorder::NativeEndian;
+use byteorder::ReadBytesExt;
 use byteorder::WriteBytesExt;
+use differential_dataflow::lattice::Lattice;
 use fwm::ChildLocation;
 
 use ::fwm::AreaSize;
@@ -8,12 +10,12 @@ use ::fwm::ItemIdx;
 use ::fwm::Layout;
 use ::fwm::LayoutAction;
 use ::fwm::MoveCursor;
-use fwm::Position;
 use ::fwm::WindowBounds;
 use fwm::Constructor;
 use fwm::ItemAndData;
 use fwm::LayoutDataMut;
 use fwm::LayoutStrategy;
+use fwm::Position;
 use fwm::SlotInContainer;
 
 use fwm::scheme::Deserializer;
@@ -57,6 +59,8 @@ use rust_guile::SCM_EOL;
 use rust_guile::SCM_UNSPECIFIED;
 use serde::Deserialize;
 use serde::Serialize;
+use timely::progress::frontier::MutableAntichain;
+use x11::xlib::AnyPropertyType;
 use x11::xlib::Atom;
 use x11::xlib::Button1;
 use x11::xlib::ButtonPressMask;
@@ -86,6 +90,8 @@ use x11::xlib::ShiftMask;
 use x11::xlib::StructureNotifyMask;
 use x11::xlib::SubstructureNotifyMask;
 use x11::xlib::SubstructureRedirectMask;
+use x11::xlib::Success;
+use x11::xlib::Window;
 use x11::xlib::XAllowEvents;
 use x11::xlib::XButtonEvent;
 use x11::xlib::XButtonPressedEvent;
@@ -100,7 +106,9 @@ use x11::xlib::XDestroyWindow;
 use x11::xlib::XDestroyWindowEvent;
 use x11::xlib::XErrorEvent;
 use x11::xlib::XEvent;
+use x11::xlib::XFree;
 use x11::xlib::XGetWMProtocols;
+use x11::xlib::XGetWindowProperty;
 use x11::xlib::XGrabButton;
 use x11::xlib::XGrabKey;
 use x11::xlib::XInternAtom;
@@ -143,6 +151,9 @@ use std::marker::PhantomData;
 use std::mem::size_of;
 use std::mem::MaybeUninit;
 use std::os::raw::c_char;
+use std::os::raw::c_int;
+use std::os::raw::c_uchar;
+use std::os::raw::c_ulong;
 use std::os::unix::io::RawFd;
 use std::ptr::null;
 use std::ptr::null_mut;
@@ -447,6 +458,10 @@ struct WmState {
     pub on_point_changed: ProtectedScm,
     pub delete_window_atom: Atom,
     pub protocols_atom: Atom,
+    pub struts: HashMap<Window, StrutPartial>,
+    pub struts_frontier: MutableAntichain<StrutPartial>,
+    pub current_strut: StrutPartial,
+    pub root_size: AreaSize,
 }
 
 unsafe impl Send for WmState {}
@@ -459,6 +474,29 @@ fn outer_to_inner_size(outer: AreaSize, dt: &WindowDecorationsTemplate) -> AreaS
 }
 
 impl WmState {
+    fn do_resize(&mut self) {
+        let content_width = self
+            .root_size
+            .width
+            .saturating_sub((self.current_strut.left + self.current_strut.right) as usize);
+        let content_height = self
+            .root_size
+            .height
+            .saturating_sub((self.current_strut.top + self.current_strut.bottom) as usize);
+        let new_bounds = WindowBounds {
+            position: Position {
+                x: self.current_strut.left as usize,
+                y: self.current_strut.top as usize,
+            },
+            content: AreaSize {
+                height: content_height,
+                width: content_width,
+            },
+        };
+        if new_bounds != self.layout.root_bounds() {
+            self.do_and_recompute(|wm| wm.layout.resize(new_bounds))
+        }
+    }
     unsafe fn call_on_point_changed(&mut self) {
         let point = self.point.serialize(Serializer::default()).expect("XXX");
         let on_point_changed = self.on_point_changed.0;
@@ -617,11 +655,53 @@ impl WmState {
             point: ItemIdx::Container(0),
             cursor: None,
             focused: None,
+            struts: Default::default(),
+            struts_frontier: MutableAntichain::new(),
+            current_strut: Default::default(),
+            root_size: AreaSize {
+                height: 0,
+                width: 0,
+            },
 
             display,
             root,
             delete_window_atom,
             protocols_atom,
+        }
+    }
+
+    fn compute_and_set_strut(&mut self) -> bool {
+        let mut meet = StrutPartial::default();
+        for x in self.struts_frontier.frontier().iter() {
+            meet.meet_assign(x)
+        }
+        if meet == self.current_strut {
+            false
+        } else {
+            self.current_strut = meet;
+            true
+        }
+    }
+    /// Returns true iff the strut meet (infimum) changed.
+    pub fn record_strut(&mut self, window: Window, new: StrutPartial) -> bool {
+        let old = self.struts.insert(window, new);
+        let changes = if let Some(old) = old {
+            self.struts_frontier.update_iter(vec![(old, -1), (new, 1)])
+        } else {
+            self.struts_frontier.update_iter(Some((new, 1)))
+        };
+        drop(changes);
+        self.compute_and_set_strut()
+    }
+
+    /// Returns true iff the strut meet (infimum) changed.
+    pub fn clear_strut(&mut self, window: Window) -> bool {
+        if let Some(old) = self.struts.remove(&window) {
+            let changes = self.struts_frontier.update_iter(Some((old, -1)));
+            drop(changes);
+            self.compute_and_set_strut()
+        } else {
+            false
         }
     }
 
@@ -981,6 +1061,95 @@ use mio::unix::pipe::Sender as MioSender;
 
 static FEEDBACK_TX: once_cell::sync::OnceCell<MioSender> = once_cell::sync::OnceCell::new();
 
+#[derive(Debug, Default, Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
+#[repr(C)]
+struct StrutPartial {
+    left: c_ulong,
+    right: c_ulong,
+    top: c_ulong,
+    bottom: c_ulong,
+    // left_start_y: c_ulong,
+    // left_end_y: c_ulong,
+    // right_start_y: c_ulong,
+    // right_end_y: c_ulong,
+    // top_start_x: c_ulong,
+    // top_end_x: c_ulong,
+    // bottom_start_x: c_ulong,
+    // bottom_end_x: c_ulong,
+}
+
+// A strut implies another strut if it blocks _more_ of the screen,
+// so these are the dual of what one might expect!
+impl timely::PartialOrder for StrutPartial {
+    fn less_equal(&self, other: &Self) -> bool {
+        self.left >= other.left
+            && self.right >= other.right
+            && self.top >= other.top
+            && self.bottom >= other.bottom
+    }
+}
+
+// A strut implies another strut if it blocks _more_ of the screen,
+// so these are the dual of what one might expect!
+impl Lattice for StrutPartial {
+    fn join(&self, other: &Self) -> Self {
+        Self {
+            left: self.left.min(other.left),
+            right: self.right.min(other.right),
+            top: self.top.min(other.top),
+            bottom: self.bottom.min(other.bottom),
+        }
+    }
+
+    fn meet(&self, other: &Self) -> Self {
+        Self {
+            left: self.left.max(other.left),
+            right: self.right.max(other.right),
+            top: self.top.max(other.top),
+            bottom: self.bottom.max(other.bottom),
+        }
+    }
+}
+
+unsafe fn get_strut(display: *mut Display, window: Window) -> Option<StrutPartial> {
+    let mut n_items = 0;
+    let mut bytes_after_return = 0;
+    let mut p_strut_partial: *mut c_uchar = null_mut();
+    let mut actual_type: Atom = 0;
+    let mut actual_format: c_int = 0;
+    let expected_items = (size_of::<StrutPartial>() / size_of::<c_ulong>()) as i64;
+    info!("calling get_strut on window {}", window);
+    if Success as c_int
+        == XGetWindowProperty(
+            display,
+            window,
+            XInternAtom(display, c(b"_NET_WM_STRUT_PARTIAL\0"), 0),
+            0,
+            expected_items,
+            0,
+            AnyPropertyType as u64,
+            &mut actual_type,
+            &mut actual_format,
+            &mut n_items,
+            &mut bytes_after_return,
+            &mut p_strut_partial,
+        )
+        && expected_items == n_items as i64
+    {
+        {
+            let mut r = std::slice::from_raw_parts(p_strut_partial, size_of::<StrutPartial>());
+            while let Ok(u) = r.read_u64::<NativeEndian>() {
+                info!("Decoded u64: 0x{:x}", u);
+            }
+        }
+        let sp: StrutPartial = std::ptr::read(p_strut_partial as *const StrutPartial);
+        XFree(p_strut_partial as *mut c_void);
+        Some(sp)
+    } else {
+        None
+    }
+}
+
 unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     let (feedback_tx, mut feedback_rx) = mio::unix::pipe::new().unwrap();
     FEEDBACK_TX.set(feedback_tx).expect("already ran run_wm!");
@@ -1003,7 +1172,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     let on_button1_pressed = scm_assq_ref(
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"on-button1-pressed\0")),
-    );    
+    );
     let display = XOpenDisplay(null());
     assert!(!display.is_null());
     XSetErrorHandler(Some(x_err));
@@ -1021,15 +1190,17 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     let screen = XScreenOfDisplay(display, 0);
     let screen = std::ptr::read(screen);
 
+    let root_size = AreaSize {
+        width: screen.width.try_into().unwrap(),
+        height: screen.height.try_into().unwrap(),
+    };
     let root_bounds = WindowBounds {
         position: Default::default(),
-        content: AreaSize {
-            width: screen.width.try_into().unwrap(),
-            height: screen.height.try_into().unwrap(),
-        },
+        content: root_size,
     };
 
     let mut wm = WmState::new(display, root, root_bounds, on_point_changed);
+    wm.root_size = root_size;
 
     wm.do_and_recompute(|_wm| {
         Some(LayoutAction::NewBounds {
@@ -1061,6 +1232,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 .expect("XXX");
             scm_apply_2(on_client_unmapped, wm_scm.inner, point, SCM_EOL);
         }
+        if wm.clear_strut(window) {
+            wm.do_resize()
+        }
     };
     let display_fd = XConnectionNumber(display) as RawFd;
     let mut poll = Poll::new().unwrap();
@@ -1076,7 +1250,18 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         .register(&mut feedback_rx, FEEDBACK, Interest::READABLE)
         .unwrap();
 
-    XGrabButton(display, Button1, 0, root, 0, (ButtonPressMask | ButtonReleaseMask) as u32, GrabModeSync, GrabModeAsync, 0, 0);
+    XGrabButton(
+        display,
+        Button1,
+        0,
+        root,
+        0,
+        (ButtonPressMask | ButtonReleaseMask) as u32,
+        GrabModeSync,
+        GrabModeAsync,
+        0,
+        0,
+    );
     loop {
         let mut e = MaybeUninit::<XEvent>::uninit();
         while poll.poll(&mut events, None).is_err() {}
@@ -1106,15 +1291,42 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     scm_apply_1(proc, wm_scm.inner, SCM_EOL);
                 }
                 x11::xlib::ButtonPress => {
-                    let XButtonEvent { type_, serial, send_event, display, window, root, subwindow, time, x, y, x_root, y_root, state, button, same_screen } = e.button;
-                    let position = Position { x: x_root as usize, y: y_root as usize };
+                    let XButtonEvent {
+                        type_,
+                        serial,
+                        send_event,
+                        display,
+                        window,
+                        root,
+                        subwindow,
+                        time,
+                        x,
+                        y,
+                        x_root,
+                        y_root,
+                        state,
+                        button,
+                        same_screen,
+                    } = e.button;
+                    let position = Position {
+                        x: x_root as usize,
+                        y: y_root as usize,
+                    };
                     let w_idx = {
                         let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                         wm.layout.window_at(position)
                     };
                     let point = w_idx.map(|w_idx| ItemIdx::Window(w_idx));
-                    info!("Button pressed at position {:?}, corresponding point {:?}", position, point);
-                    scm_apply_2(on_button1_pressed, wm_scm.inner, point.serialize(Serializer::default()).unwrap(), SCM_EOL);
+                    info!(
+                        "Button pressed at position {:?}, corresponding point {:?}",
+                        position, point
+                    );
+                    scm_apply_2(
+                        on_button1_pressed,
+                        wm_scm.inner,
+                        point.serialize(Serializer::default()).unwrap(),
+                        SCM_EOL,
+                    );
                     // https://stackoverflow.com/questions/46288251/capture-button-events-in-xlib-then-passing-the-event-to-the-client
                     XAllowEvents(display, ReplayPointer, time);
                     XSync(display, 0);
@@ -1188,15 +1400,23 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
 
                     if window == root {
                         let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                        let new_bounds = WindowBounds {
-                            position: Default::default(),
-                            content: AreaSize {
-                                width: width.try_into().unwrap(),
-                                height: height.try_into().unwrap(),
-                            },
+                        // let new_bounds = WindowBounds {
+                        //     position: Default::default(),
+                        //     content: AreaSize {
+                        //         width: width.try_into().unwrap(),
+                        //         height: height.try_into().unwrap(),
+                        //     },
+                        // };
+                        let new_size = AreaSize {
+                            width: width.try_into().unwrap(),
+                            height: height.try_into().unwrap(),
                         };
-                        if new_bounds != wm.layout.root_bounds() {
-                            wm.do_and_recompute(|wm| wm.layout.resize(new_bounds))
+                        // if new_bounds != wm.layout.root_bounds() {
+                        //     wm.do_and_recompute(|wm| wm.layout.resize(new_bounds))
+                        // }
+                        if new_size != wm.root_size {
+                            wm.root_size = new_size;
+                            wm.do_resize()
                         }
                     }
                 }
@@ -1272,6 +1492,15 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 .as_mut()
                                 .expect("Layout out of sync with client_window_to_item_idx");
                             client.mapped = true;
+                        }
+                    } else {
+                        // Mapping was never requested -- is this a dock/bar ? Check strut property to see.
+                        let strut = get_strut(display, ev.window);
+                        info!("MapNotify without request. Strut: {:?}", strut);
+                        if let Some(strut) = strut {
+                            if wm.record_strut(ev.window, strut) {
+                                wm.do_resize();
+                            }
                         }
                     }
                     wm.ensure_focus();
@@ -1624,11 +1853,7 @@ unsafe extern "C" fn set_length(state: SCM, point: SCM, length: SCM) -> SCM {
             0
         }
     };
-    let length = if length == 0 {
-        1
-    } else {
-        length
-    };
+    let length = if length == 0 { 1 } else { length };
     wm.do_and_recompute(|wm| wm.layout.set_content_length(point, length));
     SCM_UNSPECIFIED
 }
@@ -1679,7 +1904,7 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     let c = CStr::from_bytes_with_nul(b"fwm-get-point\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, get_point as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-set-point\0").unwrap();
-    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, set_point as *mut c_void);    
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, set_point as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-occupied?\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, is_occupied as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-nearest-container\0").unwrap();
