@@ -1509,13 +1509,6 @@ unsafe extern "C" fn clear_bindings(state: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
-unsafe extern "C" fn dump_layout(state: SCM) -> SCM {
-    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
-    let s = format!("{}", serde_json::to_string_pretty(&wm.layout).unwrap());
-    println!("{}", s);
-    SCM_UNSPECIFIED
-}
-
 unsafe extern "C" fn get_layout(state: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let scm = wm.layout.serialize(Serializer::default()).unwrap();
@@ -1582,6 +1575,34 @@ unsafe extern "C" fn do_on_main_thread(f: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
+unsafe extern "C" fn set_length(state: SCM, point: SCM, length: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    let length = usize::deserialize(Deserializer { scm: length }).expect("XXX");
+    wm.do_and_recompute(|wm| {
+        wm.layout.set_content_length(point, length)
+    });
+    SCM_UNSPECIFIED
+}
+
+unsafe extern "C" fn get_length(state: SCM, point: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    match wm.layout.get_content_length(point) {
+        Some(length) => length.serialize(Serializer::default()).unwrap(),
+        None => SCM_BOOL_F
+    }
+}
+
+unsafe extern "C" fn equalize_lengths(state: SCM, point: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    if let ItemIdx::Container(c_idx) = point {
+        wm.do_and_recompute(|wm| wm.layout.equalize_container_children(c_idx))
+    }
+    SCM_UNSPECIFIED
+}
+
 // TODO - codegen this, as well as translating Scheme objects to Rust objects in the function bodies
 // (similar to what we did in PyTorch)
 unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
@@ -1623,8 +1644,6 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, kill_item_at as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-kill-client-at\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, kill_client_at as *mut c_void);
-    let c = CStr::from_bytes_with_nul(b"fwm-dump-layout\0").unwrap();
-    scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, dump_layout as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-get-layout\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, get_layout as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-set-focus\0").unwrap();
@@ -1649,6 +1668,12 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, request_kill_client_at as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-mt\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, do_on_main_thread as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-set-length\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 3, 0, 0, set_length as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-get-length\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, get_length as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-equalize-lengths\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, equalize_lengths as *mut c_void);
 
     std::ptr::null_mut()
 }

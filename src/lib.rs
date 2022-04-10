@@ -454,11 +454,50 @@ where
             }
         }
     }
-    fn layout(&mut self, item: ItemIdx, out: &mut Vec<LayoutAction<W, C>>) {
-        let c_idx = match item {
-            ItemIdx::Container(idx) => idx,
-            ItemIdx::Window(_) => return,
-        };
+    pub fn get_content_length(&self, item: ItemIdx) -> Option<usize> {
+        self.slot_in_container(item).map(|SlotInContainer { c_idx, index, parent_strat }| {
+            let bounds = self.bounds(item);
+            match parent_strat {
+                LayoutStrategy::Horizontal => bounds.content.width,
+                LayoutStrategy::Vertical => bounds.content.height,
+            }
+        })
+    }
+    pub fn set_content_length(&mut self, item: ItemIdx, new_length: usize) -> Vec<LayoutAction<W, C>>{
+        let mut out = vec![];
+        info!("Setting length of {:?} to {}", item, new_length);
+        if let Some(SlotInContainer { c_idx, index, parent_strat }) = self.slot_in_container(item) {
+            let available_length = self.ctr_available_length(c_idx);
+            let new_length = new_length.min(available_length);
+            let remaining_length = available_length - new_length;
+            let children = &mut self.containers[c_idx].as_mut().unwrap().children;
+            let total_weight_of_others: f64 = children.iter().filter_map(|&(weight, child)| {
+                if child == item {
+                    None
+                } else {
+                    Some(weight)
+                }
+            }).sum();
+            for (weight, child) in children {
+                if *child == item {
+                    *weight = new_length as f64;                    
+                } else {
+                    *weight = (*weight / total_weight_of_others) * (remaining_length as f64);
+                }
+            }
+            self.layout(ItemIdx::Container(c_idx), &mut out);
+        }
+        out
+    }
+    pub fn ctr_available_length(&self, c_idx: usize) -> usize {
+        let strat = self.containers[c_idx].as_ref().unwrap().strategy;
+        let AreaSize { height, width } = self.ctr_available_area(c_idx);
+        match strat {
+            LayoutStrategy::Horizontal => width,
+            LayoutStrategy::Vertical => height,
+        }
+    }
+    pub fn ctr_available_area(&self, c_idx: usize) -> AreaSize {
         let ctr = self.containers[c_idx].as_ref().unwrap();
         let strat = ctr.strategy;
         let ctr_bounds = ctr.bounds;
@@ -479,6 +518,17 @@ where
                     .saturating_sub(total_inter + 2 * ctr.padding),
             },
         };
+        available_area
+    }
+    fn layout(&mut self, item: ItemIdx, out: &mut Vec<LayoutAction<W, C>>) {
+        let c_idx = match item {
+            ItemIdx::Container(idx) => idx,
+            ItemIdx::Window(_) => return,
+        };
+        let available_area = self.ctr_available_area(c_idx);
+        let ctr = self.containers[c_idx].as_ref().unwrap();
+        let strat = ctr.strategy;
+        let ctr_bounds = ctr.bounds;
         let begin = match strat {
             LayoutStrategy::Vertical => ctr_bounds.position.y + ctr.padding,
             LayoutStrategy::Horizontal => ctr_bounds.position.x + ctr.padding,
@@ -552,13 +602,14 @@ where
                 Direction::Left => self.split(from, item, LayoutStrategy::Horizontal, true),
                 Direction::Right => self.split(from, item, LayoutStrategy::Horizontal, false),
             },
-            MoveCursor::Into { container, index } => {
-                self.containers[container]
-                    .as_mut()
-                    .unwrap()
-                    .children
-                    .insert(index, (1.0, from));
+            MoveCursor::Into { container: c_idx, index } => {
+                let container = self.containers[c_idx].as_mut().unwrap();
+                let n_children = container.children.len();
+                let avg_weight = if n_children > 0 { container.children.iter().map(|(weight, _child)| *weight).sum::<f64>() / (n_children as f64) } else { 1.0 };
                 container
+                    .children
+                    .insert(index, (avg_weight, from));
+                c_idx
             }
         };
         match from {
@@ -615,6 +666,14 @@ where
     C: Serialize + for<'d> Deserialize<'d>,
     CCtor: Constructor<Item = C>,
 {
+    pub fn equalize_container_children(&mut self, c_idx: usize) -> Vec<LayoutAction<W, C>> {
+        for (weight, _child) in &mut self.containers[c_idx].as_mut().unwrap().children {
+            *weight = 1.0;
+        }
+        let mut out = vec![];
+        self.layout(ItemIdx::Container(c_idx), &mut out);
+        out
+    }
     pub fn root_bounds(&self) -> WindowBounds {
         self.root_bounds
     }

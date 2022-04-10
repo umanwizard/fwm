@@ -176,6 +176,18 @@
           (set! protected-points (delete leaf protected-points)))
         wm pt))
 
+
+(define (adjust-length wm pt f)
+  (let ([length (fwm-get-length wm pt)])
+    (if length
+	(fwm-set-length wm pt (f length)))))
+
+(define (increase-length wm pt)
+  (adjust-length wm pt (lambda (x) (+ x 50))))
+
+(define (decrease-length wm pt)
+  (adjust-length wm pt (lambda (x) (- x 50))))
+
 (define bindings
   (let ([mod "mod3"])
     (list
@@ -224,7 +236,14 @@
      (cons (fwm-parse-key-combo (string-append mod "+F1"))
 	   (lambda (x) (println protected-points)))
      (cons (fwm-parse-key-combo (string-append mod "+F2"))
-	   fwm-dump-layout)
+	   (lambda (wm) (let ([layout (fwm-get-layout wm)])
+			  (println layout))))
+     (cons (fwm-parse-key-combo (string-append mod "+Up"))
+	   (at-point increase-length))
+     (cons (fwm-parse-key-combo (string-append mod "+Down"))
+	   (at-point decrease-length))
+     (cons (fwm-parse-key-combo (string-append mod "+equal"))
+	   (at-point fwm-equalize-lengths))
      )
     )
   )
