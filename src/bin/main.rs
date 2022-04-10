@@ -1578,7 +1578,18 @@ unsafe extern "C" fn do_on_main_thread(f: SCM) -> SCM {
 unsafe extern "C" fn set_length(state: SCM, point: SCM, length: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
-    let length = usize::deserialize(Deserializer { scm: length }).expect("XXX");
+    let length = match usize::deserialize(Deserializer { scm: length }) {
+        Ok(length) => length,
+        Err(_e) => {
+            isize::deserialize(Deserializer { scm: length }).unwrap();
+            0
+        }
+    };
+    let length = if length == 0 {
+        1
+    } else {
+        length
+    };
     wm.do_and_recompute(|wm| wm.layout.set_content_length(point, length));
     SCM_UNSPECIFIED
 }
