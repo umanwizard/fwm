@@ -107,6 +107,7 @@ use x11::xlib::XDestroyWindowEvent;
 use x11::xlib::XErrorEvent;
 use x11::xlib::XEvent;
 use x11::xlib::XFree;
+use x11::xlib::XGetAtomName;
 use x11::xlib::XGetWMProtocols;
 use x11::xlib::XGetWindowProperty;
 use x11::xlib::XGrabButton;
@@ -1111,6 +1112,23 @@ impl Lattice for StrutPartial {
     }
 }
 
+unsafe fn is_dock(display: *mut Display, window: Window) -> bool {
+    let mut n_items = 0;
+    let mut bytes_after_return = 0;
+    let mut p_result: *mut c_uchar = null_mut();
+    let mut actual_type: Atom = 0;
+    let mut actual_format: c_int = 0;
+
+    if Success as c_int
+        == XGetWindowProperty(
+            display, window, XInternAtom(display, c(b"_NET_WM_WINDOW_TYPE\0"), 0), 0, 1, 0, AnyPropertyType as u64, &mut actual_type, &mut actual_format, &mut n_items, &mut bytes_after_return, &mut p_result) {
+            let result = std::ptr::read(p_result as *const Atom);
+            result == XInternAtom(display, c(b"_NET_WM_WINDOW_TYPE_DOCK\0"), 0)
+        } else {
+            false
+        }
+}
+
 unsafe fn get_strut(display: *mut Display, window: Window) -> Option<StrutPartial> {
     let mut n_items = 0;
     let mut bytes_after_return = 0;
@@ -1296,23 +1314,22 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     };
                     scm_apply_1(proc, wm_scm.inner, SCM_EOL);
                 }
+                x11::xlib::ClientMessage => {
+                    let XClientMessageEvent { window, message_type, format, data, .. } = e.client_message;
+                    let p_message_type = XGetAtomName(display, message_type);
+                    if p_message_type != null_mut() {
+                        let message_type = CStr::from_ptr(p_message_type);
+                        let s = message_type.to_string_lossy();
+                        info!("Client message: {}", s)
+                    }
+                }
                 x11::xlib::ButtonPress => {
                     let XButtonEvent {
-                        type_,
-                        serial,
-                        send_event,
                         display,
-                        window,
-                        root,
-                        subwindow,
                         time,
-                        x,
-                        y,
                         x_root,
                         y_root,
-                        state,
-                        button,
-                        same_screen,
+                        ..
                     } = e.button;
                     let position = Position {
                         x: x_root as usize,
@@ -1433,7 +1450,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                     let already_mapped = wm.client_window_to_item_idx.contains_key(&window);
 
-                    if !already_mapped {
+                    let is_dock = is_dock(display, window);
+                    info!("is_dock: {}", is_dock);
+                    if !already_mapped && !is_dock {
                         let insert_cursor = scm_apply_1(place_new_window, wm_scm.inner, SCM_EOL);
                         let insert_cursor =
                             MoveOrReplace::deserialize(Deserializer { scm: insert_cursor })

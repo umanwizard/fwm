@@ -298,6 +298,7 @@
   
  (cons 'after-start
        (lambda (_)
-	 (exec "xmobar -bB white -a right -F blue -t '%KJFK%' -c '[Run Weather \"KJFK\" [] 36000]' -f 'xft:Bitstream Vera Sans Mono:size=24'")))
+	 (exec "xmobar -bB white -a right -F blue -t '%KJFK%' -c '[Run Weather \"KJFK\" [] 36000]' -f 'xft:Bitstream Vera Sans Mono:size=24'")
+     (exec "stalonetray --window-strut top")))
  ))
 
