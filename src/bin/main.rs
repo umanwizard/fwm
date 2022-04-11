@@ -1321,11 +1321,17 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     let keysym = XKeycodeToKeysym(display, keycode.try_into().unwrap(), 0); // TODO - figure out what the zero means here.
 
                     let combo = KeyCombo::from_x(keysym, state);
-                    let proc = {
+                    info!("received key combo: {:?}", combo);
+                    let binding = {
                         let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                        wm.bindings[&combo].0 // XXX
+                        wm.bindings.get(&combo)
                     };
-                    scm_apply_1(proc, wm_scm.inner, SCM_EOL);
+                    if let Some(ProtectedScm(proc)) = binding {
+                        info!("binding found, calling into scheme");
+                        scm_apply_1(*proc, wm_scm.inner, SCM_EOL);
+                    } else {
+                        info!("No binding found");
+                    };
                 }
                 x11::xlib::ClientMessage => {
                     let XClientMessageEvent {
