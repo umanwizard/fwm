@@ -27,6 +27,7 @@
 (system "vmware-user-suid-wrapper")
 (system "xmodmap ~/.Xmodmap")
 (exec "xscreensaver -no-splash")
+(exec "xcompmgr")
 
 
 (define random-wallpaper
