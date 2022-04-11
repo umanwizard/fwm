@@ -1121,12 +1121,25 @@ unsafe fn is_dock(display: *mut Display, window: Window) -> bool {
 
     if Success as c_int
         == XGetWindowProperty(
-            display, window, XInternAtom(display, c(b"_NET_WM_WINDOW_TYPE\0"), 0), 0, 1, 0, AnyPropertyType as u64, &mut actual_type, &mut actual_format, &mut n_items, &mut bytes_after_return, &mut p_result) {
-            let result = std::ptr::read(p_result as *const Atom);
-            result == XInternAtom(display, c(b"_NET_WM_WINDOW_TYPE_DOCK\0"), 0)
-        } else {
-            false
-        }
+            display,
+            window,
+            XInternAtom(display, c(b"_NET_WM_WINDOW_TYPE\0"), 0),
+            0,
+            1,
+            0,
+            AnyPropertyType as u64,
+            &mut actual_type,
+            &mut actual_format,
+            &mut n_items,
+            &mut bytes_after_return,
+            &mut p_result,
+        )
+    {
+        let result = std::ptr::read(p_result as *const Atom);
+        result == XInternAtom(display, c(b"_NET_WM_WINDOW_TYPE_DOCK\0"), 0)
+    } else {
+        false
+    }
 }
 
 unsafe fn get_strut(display: *mut Display, window: Window) -> Option<StrutPartial> {
@@ -1315,7 +1328,13 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     scm_apply_1(proc, wm_scm.inner, SCM_EOL);
                 }
                 x11::xlib::ClientMessage => {
-                    let XClientMessageEvent { window, message_type, format, data, .. } = e.client_message;
+                    let XClientMessageEvent {
+                        window,
+                        message_type,
+                        format,
+                        data,
+                        ..
+                    } = e.client_message;
                     let p_message_type = XGetAtomName(display, message_type);
                     if p_message_type != null_mut() {
                         let message_type = CStr::from_ptr(p_message_type);
