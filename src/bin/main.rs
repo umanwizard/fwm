@@ -781,6 +781,9 @@ impl WmState {
                         self.focused = None;
                     }
                 }
+                if self.cursor.map(|cursor| cursor.item() == item.item()).unwrap_or(false) {
+                    self.cursor = None;
+                }
                 match item {
                     ItemAndData::Window(_, data) => unsafe {
                         if let Some(client) = data.client {

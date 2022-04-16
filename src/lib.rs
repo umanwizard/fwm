@@ -59,6 +59,15 @@ pub enum ItemAndData<W, C> {
     Container(usize, C),
 }
 
+impl<W, C> ItemAndData<W, C> {
+    pub fn item(&self) -> ItemIdx {
+        match self {
+            &ItemAndData::Window(w, _) => ItemIdx::Window(w),
+            &ItemAndData::Container(c, _) => ItemIdx::Container(c),
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub struct Window<W> {
     pub bounds: WindowBounds,
