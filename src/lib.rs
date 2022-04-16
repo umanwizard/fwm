@@ -503,7 +503,7 @@ where
         }) = self.slot_in_container(item)
         {
             let available_length = self.ctr_available_length(c_idx);
-            let new_length = new_length.min(available_length);
+            let new_length = new_length.min(available_length - 1);
             let remaining_length = available_length - new_length;
             let children = &mut self.containers[c_idx].as_mut().unwrap().children;
             let total_weight_of_others: f64 = children
