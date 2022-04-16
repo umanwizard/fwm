@@ -783,7 +783,7 @@ impl WmState {
                 }
                 if self
                     .cursor
-                    .map(|cursor| cursor.item() == item.item())
+                    .map(|cursor| !self.layout.is_cursor_valid(cursor))
                     .unwrap_or(false)
                 {
                     self.cursor = None;
