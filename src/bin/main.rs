@@ -1926,6 +1926,15 @@ unsafe extern "C" fn equalize_lengths(state: SCM, point: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
+unsafe extern "C" fn DEBUG_force_resize(state: SCM, width: SCM, height: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let width = usize::deserialize(Deserializer { scm: width }).expect("XXX");
+    let height = usize::deserialize(Deserializer { scm: height }).expect("XXX");
+    wm.root_size = AreaSize { width, height };
+    wm.do_resize();
+    SCM_UNSPECIFIED
+}
+
 // TODO - codegen this, as well as translating Scheme objects to Rust objects in the function bodies
 // (similar to what we did in PyTorch)
 unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
@@ -1999,6 +2008,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, get_length as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-equalize-lengths\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, equalize_lengths as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-DEBUG-force-resize\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 3, 0, 0, DEBUG_force_resize as *mut c_void);
 
     std::ptr::null_mut()
 }
