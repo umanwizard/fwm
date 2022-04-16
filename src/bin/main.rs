@@ -1133,7 +1133,7 @@ unsafe fn is_dock(display: *mut Display, window: Window) -> bool {
             &mut n_items,
             &mut bytes_after_return,
             &mut p_result,
-        )
+        ) && !p_result.is_null()
     {
         let result = std::ptr::read(p_result as *const Atom);
         result == XInternAtom(display, c(b"_NET_WM_WINDOW_TYPE_DOCK\0"), 0)
