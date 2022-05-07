@@ -387,11 +387,9 @@ where
     }
 
     pub fn window_at(&self, position: Position) -> Option<usize> {
-        for (w_idx, w) in self.windows.values().enumerate() {
-            if let Window { bounds, .. } = w {
-                if bounds.contains(position) {
-                    return Some(w_idx);
-                }
+        for (w_idx, Window { bounds, .. }) in self.windows.iter() {
+            if bounds.contains(position) {
+                return Some(*w_idx);
             }
         }
         None

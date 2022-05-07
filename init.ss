@@ -190,6 +190,7 @@
 (define (decrease-length wm pt)
   (adjust-length wm pt (lambda (x) (- x 50))))
 
+(use-modules (ice-9 pretty-print))
 (define bindings
   (let ([mod "mod3"])
     (list
@@ -241,7 +242,7 @@
 	   (lambda (x) (println protected-points)))
      (cons (fwm-parse-key-combo (string-append mod "+F2"))
 	   (lambda (wm) (let ([layout (fwm-get-layout wm)])
-			  (println layout))))
+			  (println (pretty-print layout)))))
      (cons (fwm-parse-key-combo (string-append mod "+Up"))
 	   (at-point increase-length))
      (cons (fwm-parse-key-combo (string-append mod "+Down"))
