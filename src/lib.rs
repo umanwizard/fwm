@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use log::info;
 use serde::{Deserialize, Serialize};
 use x11::xlib::XSetWindowBackground;
@@ -162,14 +164,29 @@ pub struct SlotInContainer {
     pub parent_strat: LayoutStrategy,
 }
 
+trait IdGen {
+    type Id;
+    fn next_id(&mut self) -> Self::Id;
+}
+
+impl IdGen for usize {
+    type Id = usize;
+    fn next_id(&mut self) -> usize {
+        *self += 1;
+        *self - 1
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layout<W, C, CCtor> {
-    windows: Vec<Option<Window<W>>>,
-    containers: Vec<Option<Container<C>>>, // 0 is the root
+    windows: BTreeMap<usize, Window<W>>,
+    containers: BTreeMap<usize, Container<C>>,
     root_bounds: WindowBounds,
     default_padding: usize,
     #[serde(skip)]
     cctor: Option<CCtor>,
+    window_idgen: usize,
+    container_idgen: usize,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Copy, Serialize, Deserialize)]
@@ -260,7 +277,7 @@ where
                             Some(i) => i,
                             None => break None,
                         };
-                        let parent_ctr = self.layout.containers[parent].as_ref().unwrap();
+                        let parent_ctr = &self.layout.containers[&parent];
                         let index_in_parent = parent_ctr
                             .children
                             .iter()
@@ -285,16 +302,16 @@ where
     CCtor: Constructor<Item = C>,
 {
     fn try_window(&self, w_idx: usize) -> Option<&Window<W>> {
-        self.windows.get(w_idx).and_then(|mw| mw.as_ref())
+        self.windows.get(&w_idx)
     }
     fn try_window_mut(&mut self, w_idx: usize) -> Option<&mut Window<W>> {
-        self.windows.get_mut(w_idx).and_then(|mw| mw.as_mut())
+        self.windows.get_mut(&w_idx)
     }
     fn try_container(&self, c_idx: usize) -> Option<&Container<C>> {
-        self.containers.get(c_idx).and_then(|mc| mc.as_ref())
+        self.containers.get(&c_idx)
     }
     fn try_container_mut(&mut self, c_idx: usize) -> Option<&mut Container<C>> {
-        self.containers.get_mut(c_idx).and_then(|mc| mc.as_mut())
+        self.containers.get_mut(&c_idx)
     }
 
     pub fn is_cursor_valid(&self, cursor: MoveCursor) -> bool {
@@ -302,8 +319,7 @@ where
             MoveCursor::Split { item, direction: _ } => self.exists(item),
             MoveCursor::Into { container, index } => self
                 .containers
-                .get(container)
-                .and_then(Option::as_ref)
+                .get(&container)
                 .map(|c| index <= c.children.len())
                 .unwrap_or(false),
         }
@@ -350,14 +366,14 @@ where
     pub fn n_children(&self, item: ItemIdx) -> usize {
         match item {
             ItemIdx::Window(_) => 0,
-            ItemIdx::Container(c_idx) => self.containers[c_idx].as_ref().unwrap().children.len(),
+            ItemIdx::Container(c_idx) => self.containers[&c_idx].children.len(),
         }
     }
 
     pub fn slot_in_container(&self, item: ItemIdx) -> Option<SlotInContainer> {
         self.parent_container(item).map(|p_ctr| {
             let iip = self.index_in_parent(item).unwrap();
-            let strat = self.containers[p_ctr].as_ref().unwrap().strategy;
+            let strat = self.containers[&p_ctr].strategy;
             SlotInContainer {
                 c_idx: p_ctr,
                 index: iip,
@@ -371,8 +387,8 @@ where
     }
 
     pub fn window_at(&self, position: Position) -> Option<usize> {
-        for (w_idx, w) in self.windows.iter().enumerate() {
-            if let Some(Window { bounds, .. }) = w {
+        for (w_idx, w) in self.windows.values().enumerate() {
+            if let Window { bounds, .. } = w {
                 if bounds.contains(position) {
                     return Some(w_idx);
                 }
@@ -391,41 +407,35 @@ where
     ) -> usize {
         match self.parent_container(split) {
             Some(parent) => {
-                let next_c_idx = self
-                    .containers
-                    .iter()
-                    .position(Option::is_none)
-                    .unwrap_or_else(|| {
-                        self.containers.push(None);
-                        self.containers.len() - 1
-                    });
-                let index_in_parent = self.containers[parent]
-                    .as_ref()
-                    .unwrap()
+                let next_c_idx = self.container_idgen.next_id();
+                let index_in_parent = self.containers[&parent]
                     .children
                     .iter()
                     .position(|&(_weight, child)| child == split)
                     .unwrap();
                 let bounds = self.bounds(split);
-                self.containers[next_c_idx] = Some(Container {
-                    strategy,
-                    children: if inserted_first {
-                        vec![(1.0, inserted), (1.0, split)]
-                    } else {
-                        vec![(1.0, split), (1.0, inserted)]
+                self.containers.insert(
+                    next_c_idx,
+                    Container {
+                        strategy,
+                        children: if inserted_first {
+                            vec![(1.0, inserted), (1.0, split)]
+                        } else {
+                            vec![(1.0, split), (1.0, inserted)]
+                        },
+                        parent: Some(parent),
+                        bounds,
+                        inter: 0, // TODO - this should be configurable.
+                        data: self.cctor.as_mut().expect("Must set cctor!").construct(),
+                        padding: self.default_padding,
                     },
-                    parent: Some(parent),
-                    bounds,
-                    inter: 0, // TODO - this should be configurable.
-                    data: self.cctor.as_mut().expect("Must set cctor!").construct(),
-                    padding: self.default_padding,
-                });
-                let ctr = self.containers[parent].as_mut().unwrap();
+                );
+                let ctr = self.containers.get_mut(&parent).unwrap();
                 ctr.children[index_in_parent].1 = ItemIdx::Container(next_c_idx);
                 next_c_idx
             }
             None => {
-                let root = self.containers[0].as_mut().unwrap();
+                let root = self.containers.get_mut(&0).unwrap();
                 match root.children.len() {
                     0 => {
                         root.strategy = strategy;
@@ -437,46 +447,41 @@ where
                         self.split(inserted, child, strategy, inserted_first)
                     }
                     _ => {
-                        let next_c_idx = self
-                            .containers
-                            .iter()
-                            .position(Option::is_none)
-                            .unwrap_or_else(|| {
-                                self.containers.push(None);
-                                self.containers.len() - 1
-                            });
+                        let next_c_idx = self.container_idgen.next_id();
                         let Container {
                             strategy,
                             children,
                             bounds,
                             inter,
-                            parent: _,
-                            data: _,
-                            padding: _,
-                        } = self.containers[0].take().unwrap();
+                            ..
+                        } = self.containers.get_mut(&0).unwrap();
                         let new_ctr = Container {
-                            strategy,
-                            children,
+                            strategy: *strategy,
+                            children: std::mem::take(children),
                             bounds: Default::default(),
-                            inter,
+                            inter: *inter,
                             parent: Some(0),
                             data: self.cctor.as_mut().expect("Must set cctor!").construct(),
                             padding: self.default_padding,
                         };
-                        self.containers[next_c_idx] = Some(new_ctr);
-                        self.containers[0] = Some(Container {
-                            strategy: LayoutStrategy::Horizontal,
-                            children: if inserted_first {
-                                vec![(1.0, inserted), (1.0, ItemIdx::Container(next_c_idx))]
-                            } else {
-                                vec![(1.0, ItemIdx::Container(next_c_idx)), (1.0, inserted)]
+                        let bounds = *bounds;
+                        self.containers.insert(next_c_idx, new_ctr);
+                        self.containers.insert(
+                            0,
+                            Container {
+                                strategy: LayoutStrategy::Horizontal,
+                                children: if inserted_first {
+                                    vec![(1.0, inserted), (1.0, ItemIdx::Container(next_c_idx))]
+                                } else {
+                                    vec![(1.0, ItemIdx::Container(next_c_idx)), (1.0, inserted)]
+                                },
+                                parent: None,
+                                bounds,
+                                inter: 0,
+                                data: self.cctor.as_mut().expect("Must set cctor!").construct(),
+                                padding: self.default_padding,
                             },
-                            parent: None,
-                            bounds,
-                            inter: 0,
-                            data: self.cctor.as_mut().expect("Must set cctor!").construct(),
-                            padding: self.default_padding,
-                        });
+                        );
                         0
                     }
                 }
@@ -514,7 +519,7 @@ where
             let available_length = self.ctr_available_length(c_idx);
             let new_length = new_length.min(available_length - 1);
             let remaining_length = available_length - new_length;
-            let children = &mut self.containers[c_idx].as_mut().unwrap().children;
+            let children = &mut self.containers.get_mut(&c_idx).unwrap().children;
             let total_weight_of_others: f64 = children
                 .iter()
                 .filter_map(
@@ -539,7 +544,7 @@ where
         out
     }
     pub fn ctr_available_length(&self, c_idx: usize) -> usize {
-        let strat = self.containers[c_idx].as_ref().unwrap().strategy;
+        let strat = self.containers[&c_idx].strategy;
         let AreaSize { height, width } = self.ctr_available_area(c_idx);
         match strat {
             LayoutStrategy::Horizontal => width,
@@ -547,7 +552,7 @@ where
         }
     }
     pub fn ctr_available_area(&self, c_idx: usize) -> AreaSize {
-        let ctr = self.containers[c_idx].as_ref().unwrap();
+        let ctr = &self.containers[&c_idx];
         let strat = ctr.strategy;
         let ctr_bounds = ctr.bounds;
         let total_inter = ctr.inter * (ctr.children.len().saturating_sub(1));
@@ -575,7 +580,7 @@ where
             ItemIdx::Window(_) => return,
         };
         let available_area = self.ctr_available_area(c_idx);
-        let ctr = self.containers[c_idx].as_ref().unwrap();
+        let ctr = &self.containers[&c_idx];
         let strat = ctr.strategy;
         let ctr_bounds = ctr.bounds;
         let begin = match strat {
@@ -632,10 +637,10 @@ where
         for (idx, bounds) in to_fix {
             match idx {
                 ItemIdx::Window(w_idx) => {
-                    self.windows[w_idx].as_mut().unwrap().bounds = bounds;
+                    self.windows.get_mut(&w_idx).unwrap().bounds = bounds;
                 }
                 ItemIdx::Container(c_idx) => {
-                    self.containers[c_idx].as_mut().unwrap().bounds = bounds;
+                    self.containers.get_mut(&c_idx).unwrap().bounds = bounds;
                     self.layout(idx, out);
                 }
             }
@@ -655,7 +660,7 @@ where
                 container: c_idx,
                 index,
             } => {
-                let container = self.containers[c_idx].as_mut().unwrap();
+                let container = self.containers.get_mut(&c_idx).unwrap();
                 let n_children = container.children.len();
                 let avg_weight = if n_children > 0 {
                     container
@@ -672,8 +677,8 @@ where
             }
         };
         match from {
-            ItemIdx::Container(idx) => self.containers[idx].as_mut().unwrap().parent = Some(to_ctr),
-            ItemIdx::Window(idx) => self.windows[idx].as_mut().unwrap().parent = Some(to_ctr),
+            ItemIdx::Container(idx) => self.containers.get_mut(&idx).unwrap().parent = Some(to_ctr),
+            ItemIdx::Window(idx) => self.windows.get_mut(&idx).unwrap().parent = Some(to_ctr),
         };
         // If we created a split, we need to update the old
         // item's parent to be the new container.
@@ -682,10 +687,10 @@ where
             match item {
                 ItemIdx::Container(idx) => {
                     if idx != 0 {
-                        self.containers[idx].as_mut().unwrap().parent = Some(to_ctr)
+                        self.containers.get_mut(&idx).unwrap().parent = Some(to_ctr)
                     }
                 }
-                ItemIdx::Window(idx) => self.windows[idx].as_mut().unwrap().parent = Some(to_ctr),
+                ItemIdx::Window(idx) => self.windows.get_mut(&idx).unwrap().parent = Some(to_ctr),
             };
         }
         to_ctr
@@ -693,16 +698,14 @@ where
     /// Returns None for one past end
     pub fn item_from_child_location(&self, cl: ChildLocation) -> Option<ItemIdx> {
         let ChildLocation { container, index } = cl;
-        let ctr = self.containers[container].as_ref().unwrap();
+        let ctr = &self.containers[&container];
         assert!(index <= ctr.children.len());
         ctr.children.get(index).map(|(_, idx)| *idx)
     }
     /// Returns None for the root
     pub fn child_location(&self, item: ItemIdx) -> Option<ChildLocation> {
         self.parent_container(item).map(|container| {
-            let index = self.containers[container]
-                .as_ref()
-                .unwrap()
+            let index = self.containers[&container]
                 .children
                 .iter()
                 .enumerate()
@@ -726,7 +729,7 @@ where
     CCtor: Constructor<Item = C>,
 {
     pub fn equalize_container_children(&mut self, c_idx: usize) -> Vec<LayoutAction<W, C>> {
-        for (weight, _child) in &mut self.containers[c_idx].as_mut().unwrap().children {
+        for (weight, _child) in &mut self.containers.get_mut(&c_idx).unwrap().children {
             *weight = 1.0;
         }
         let mut out = vec![];
@@ -738,7 +741,7 @@ where
     }
     pub fn index_in_parent(&self, item: ItemIdx) -> Option<usize> {
         self.parent_container(item).map(|parent| {
-            let parent_ctr = self.containers[parent].as_ref().unwrap();
+            let parent_ctr = &self.containers[&parent];
             parent_ctr
                 .children
                 .iter()
@@ -754,7 +757,7 @@ where
             },
             None => MoveCursor::Split {
                 item: ItemIdx::Container(0),
-                direction: match self.containers[0].as_ref().unwrap().strategy {
+                direction: match self.containers[&0].strategy {
                     LayoutStrategy::Horizontal => Direction::Left,
                     LayoutStrategy::Vertical => Direction::Up,
                 },
@@ -769,20 +772,25 @@ where
             root_bounds: bounds,
             cctor: Some(cctor),
             default_padding,
+            container_idgen: 0,
+            window_idgen: 0,
         };
-        this.containers.push(Some(Container {
-            bounds,
-            children: Default::default(),
-            inter: 0,
-            parent: None,
-            strategy: LayoutStrategy::Horizontal,
-            data: root_data,
-            padding: default_padding,
-        }));
+        this.containers.insert(
+            this.container_idgen.next_id(),
+            Container {
+                bounds,
+                children: Default::default(),
+                inter: 0,
+                parent: None,
+                strategy: LayoutStrategy::Horizontal,
+                data: root_data,
+                padding: default_padding,
+            },
+        );
         this
     }
     pub fn windows<'a>(&'a self) -> impl Iterator<Item = &'a Window<W>> {
-        self.windows.iter().filter_map(Option::as_ref)
+        self.windows.values()
     }
     pub fn resize(&mut self, bounds: WindowBounds) -> Vec<LayoutAction<W, C>>
     where
@@ -790,7 +798,7 @@ where
         W: std::fmt::Debug,
     {
         info!("Resizing in wb: {:?}", bounds);
-        self.containers[0].as_mut().unwrap().bounds = bounds;
+        self.containers.get_mut(&0).unwrap().bounds = bounds;
         self.root_bounds = bounds;
         let mut out = vec![];
         self.layout(ItemIdx::Container(0), &mut out);
@@ -802,13 +810,13 @@ where
     }
     pub fn parent_container(&self, item: ItemIdx) -> Option<usize> {
         match item {
-            ItemIdx::Window(idx) => Some(self.windows[idx].as_ref().unwrap().parent?),
-            ItemIdx::Container(idx) => self.containers[idx].as_ref().unwrap().parent,
+            ItemIdx::Window(idx) => Some(self.windows[&idx].parent?),
+            ItemIdx::Container(idx) => self.containers[&idx].parent,
         }
     }
     fn topo_next_recursive(&self, item: ItemIdx) -> Option<ItemIdx> {
         self.parent_container(item).and_then(|parent| {
-            let parent_ctr = self.containers[parent].as_ref().unwrap();
+            let parent_ctr = &self.containers[&parent];
             let idx_in_parent = parent_ctr
                 .children
                 .iter()
@@ -830,7 +838,7 @@ where
         loop {
             match cur {
                 ItemIdx::Container(c_idx) => {
-                    let cur_ctr = self.containers[c_idx].as_ref().unwrap();
+                    let cur_ctr = &self.containers[&c_idx];
                     match cur_ctr.children.last().copied() {
                         Some((_weight, next)) => cur = next,
                         None => return cur,
@@ -847,9 +855,9 @@ where
         result: &mut Vec<LayoutAction<W, C>>,
     ) -> Option<usize> {
         if let Some(grandparent) = self.parent_container(ItemIdx::Container(parent)) {
-            if self.containers[parent].as_ref().unwrap().children.len() == 1 {
-                let parent_ctr = self.containers[parent].take().unwrap();
-                let gp_ctr = self.containers[grandparent].as_ref().unwrap();
+            if self.containers[&parent].children.len() == 1 {
+                let parent_ctr = self.containers.remove(&parent).unwrap();
+                let gp_ctr = &self.containers[&grandparent];
                 result.push(LayoutAction::ItemDestroyed {
                     item: ItemAndData::Container(parent, parent_ctr.data),
                 });
@@ -860,11 +868,11 @@ where
                     .unwrap();
                 let child = parent_ctr.children[0].1;
 
-                let gp_ctr = self.containers[grandparent].as_mut().unwrap();
+                let gp_ctr = self.containers.get_mut(&grandparent).unwrap();
                 gp_ctr.children[index_in_gp].1 = child;
                 *(match child {
-                    ItemIdx::Container(idx) => &mut self.containers[idx].as_mut().unwrap().parent,
-                    ItemIdx::Window(idx) => &mut self.windows[idx].as_mut().unwrap().parent,
+                    ItemIdx::Container(idx) => &mut self.containers.get_mut(&idx).unwrap().parent,
+                    ItemIdx::Window(idx) => &mut self.windows.get_mut(&idx).unwrap().parent,
                 }) = Some(grandparent);
                 return Some(grandparent);
             }
@@ -882,10 +890,10 @@ where
             .map(|descendant| {
                 let item = match descendant {
                     ItemIdx::Container(c_idx) => {
-                        ItemAndData::Container(c_idx, self.containers[c_idx].take().unwrap().data)
+                        ItemAndData::Container(c_idx, self.containers.remove(&c_idx).unwrap().data)
                     }
                     ItemIdx::Window(w_idx) => {
-                        ItemAndData::Window(w_idx, self.windows[w_idx].take().unwrap().data)
+                        ItemAndData::Window(w_idx, self.windows.remove(&w_idx).unwrap().data)
                     }
                 };
                 LayoutAction::ItemDestroyed { item }
@@ -894,19 +902,22 @@ where
         match parent {
             None => {
                 // we destroyed the root, but there must always be a root.
-                self.containers[0] = Some(Container {
-                    strategy: LayoutStrategy::Horizontal,
-                    children: vec![],
-                    parent: None,
-                    inter: Default::default(),
-                    bounds: self.root_bounds,
-                    data: self.cctor.as_mut().expect("Must set cctor!").construct(),
-                    padding: self.default_padding,
-                });
+                self.containers.insert(
+                    0,
+                    Container {
+                        strategy: LayoutStrategy::Horizontal,
+                        children: vec![],
+                        parent: None,
+                        inter: Default::default(),
+                        bounds: self.root_bounds,
+                        data: self.cctor.as_mut().expect("Must set cctor!").construct(),
+                        padding: self.default_padding,
+                    },
+                );
             }
             Some(mut parent) => {
                 let index_in_parent = index_in_parent.unwrap();
-                let parent_ctr = self.containers[parent].as_mut().unwrap();
+                let parent_ctr = self.containers.get_mut(&parent).unwrap();
                 parent_ctr.children.remove(index_in_parent);
                 // fuse if necessary
                 if let Some(grandparent) = self.fuse_if_necessary(parent, &mut result) {
@@ -934,19 +945,15 @@ where
         false
     }
     pub fn alloc_window(&mut self, data: W) -> usize {
-        let next_idx = self
-            .windows
-            .iter()
-            .position(Option::is_none)
-            .unwrap_or_else(|| {
-                self.windows.push(None);
-                self.windows.len() - 1
-            });
-        self.windows[next_idx] = Some(Window {
-            bounds: Default::default(),
-            parent: None,
-            data,
-        });
+        let next_idx = self.window_idgen.next_id();
+        self.windows.insert(
+            next_idx,
+            Window {
+                bounds: Default::default(),
+                parent: None,
+                data,
+            },
+        );
         next_idx
     }
     pub fn r#move(&mut self, from: ItemIdx, to: MoveCursor) -> Vec<LayoutAction<W, C>> {
@@ -958,7 +965,7 @@ where
         let mut from_parent = self.parent_container(from);
         let mut result = vec![];
         let idx_in_parent = if let Some(from_parent) = from_parent {
-            let parent_ctr = self.containers[from_parent].as_mut().unwrap();
+            let parent_ctr = self.containers.get_mut(&from_parent).unwrap();
             let idx_in_parent = parent_ctr
                 .children
                 .iter()
@@ -987,7 +994,7 @@ where
             // This will have created a new container; notify the client code.
             result.push(LayoutAction::NewBounds {
                 idx: ItemIdx::Container(insert_modified),
-                bounds: self.containers[insert_modified].as_ref().unwrap().bounds,
+                bounds: self.containers[&insert_modified].bounds,
             });
         }
         if let Some(fp) = from_parent {
@@ -1037,7 +1044,7 @@ where
         let orig_parent_container_idx = parent_container_idx;
         //        let mut ancestor = None;
         // let mut cur = from;
-        let parent_container = self.containers[parent_container_idx].as_ref().unwrap();
+        let parent_container = &self.containers[&parent_container_idx];
         assert!(index_in_parent <= parent_container.children.len());
         assert!(between_items || index_in_parent < parent_container.children.len());
         let point = point.unwrap_or_else(|| {
@@ -1063,7 +1070,7 @@ where
         let mut ancestor = None;
 
         while let Some(parent_ctr_idx) = parent_container_idx {
-            let parent_ctr = self.containers[parent_ctr_idx].as_ref().unwrap();
+            let parent_ctr = &self.containers[&parent_ctr_idx];
             let strat = parent_ctr.strategy;
             let can_go_back = ((dir == Direction::Left && strat == LayoutStrategy::Horizontal)
                 || (dir == Direction::Up && strat == LayoutStrategy::Vertical))
@@ -1087,9 +1094,7 @@ where
             }
             parent_container_idx = self.parent_container(ItemIdx::Container(parent_ctr_idx));
             if let Some(next) = parent_container_idx {
-                index_in_parent = self.containers[next]
-                    .as_ref()
-                    .unwrap()
+                index_in_parent = self.containers[&next]
                     .children
                     .iter()
                     .enumerate()
@@ -1114,14 +1119,12 @@ where
                      mut container,
                      mut index,
                  }| {
-                    while let Some(ItemIdx::Container(c_idx)) = self.containers[container]
-                        .as_ref()
-                        .unwrap()
+                    while let Some(ItemIdx::Container(c_idx)) = self.containers[&container]
                         .children
                         .get(index)
                         .map(|(_w, idx)| *idx)
                     {
-                        let ctr = self.containers[c_idx].as_ref().unwrap();
+                        let ctr = &self.containers[&c_idx];
                         container = c_idx;
                         index = if move_horizontal == (ctr.strategy == LayoutStrategy::Horizontal) {
                             if move_to_first {
@@ -1164,7 +1167,7 @@ where
         }
     }
     pub fn children(&self, container: usize) -> &[(f64, ItemIdx)] {
-        &self.containers[container].as_ref().unwrap().children
+        &self.containers[&container].children
     }
     pub fn nearest_container(&self, item: ItemIdx) -> usize {
         match item {
@@ -1176,8 +1179,8 @@ where
     }
     pub fn try_bounds(&self, item: ItemIdx) -> Option<WindowBounds> {
         match item {
-            ItemIdx::Container(c_idx) => self.containers[c_idx].as_ref().map(|c| c.bounds),
-            ItemIdx::Window(w_idx) => self.windows[w_idx].as_ref().map(|w| w.bounds),
+            ItemIdx::Container(c_idx) => self.containers.get(&c_idx).map(|c| c.bounds),
+            ItemIdx::Window(w_idx) => self.windows.get(&w_idx).map(|w| w.bounds),
         }
     }
     pub fn bounds(&self, item: ItemIdx) -> WindowBounds {
@@ -1187,7 +1190,7 @@ where
     /// `index` may be equal to the container's length, in which case
     /// this function returns the gap at the end.
     pub fn inter_bounds(&self, container: usize, index: usize) -> WindowBounds {
-        let container = self.containers[container].as_ref().unwrap();
+        let container = &self.containers[&container];
         assert!(index <= container.children.len());
         if container.children.is_empty() {
             return container.bounds;
@@ -1263,16 +1266,8 @@ where
 
     pub fn exists(&self, idx: ItemIdx) -> bool {
         match idx {
-            ItemIdx::Container(c_idx) => self
-                .containers
-                .get(c_idx)
-                .and_then(|maybe_ctr| maybe_ctr.as_ref())
-                .is_some(),
-            ItemIdx::Window(w_idx) => self
-                .windows
-                .get(w_idx)
-                .and_then(|maybe_w| maybe_w.as_ref())
-                .is_some(),
+            ItemIdx::Container(c_idx) => self.containers.get(&c_idx).is_some(),
+            ItemIdx::Window(w_idx) => self.windows.get(&w_idx).is_some(),
         }
     }
 }
