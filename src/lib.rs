@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use log::info;
 use serde::{Deserialize, Serialize};
-use x11::xlib::XSetWindowBackground;
 
 pub mod scheme;
 
@@ -487,19 +486,14 @@ where
         }
     }
     pub fn get_content_length(&self, item: ItemIdx) -> Option<usize> {
-        self.slot_in_container(item).map(
-            |SlotInContainer {
-                 c_idx,
-                 index,
-                 parent_strat,
-             }| {
+        self.slot_in_container(item)
+            .map(|SlotInContainer { parent_strat, .. }| {
                 let bounds = self.bounds(item);
                 match parent_strat {
                     LayoutStrategy::Horizontal => bounds.content.width,
                     LayoutStrategy::Vertical => bounds.content.height,
                 }
-            },
-        )
+            })
     }
     pub fn set_content_length(
         &mut self,
@@ -508,12 +502,7 @@ where
     ) -> Vec<LayoutAction<W, C>> {
         let mut out = vec![];
         info!("Setting length of {:?} to {}", item, new_length);
-        if let Some(SlotInContainer {
-            c_idx,
-            index,
-            parent_strat,
-        }) = self.slot_in_container(item)
-        {
+        if let Some(SlotInContainer { c_idx, .. }) = self.slot_in_container(item) {
             let available_length = self.ctr_available_length(c_idx);
             let new_length = new_length.min(available_length - 1);
             let remaining_length = available_length - new_length;
@@ -590,7 +579,6 @@ where
         next_window_origin.x += ctr.padding;
         next_window_origin.y += ctr.padding;
         let inter = ctr.inter;
-        let padding = ctr.padding;
         let mut to_fix = vec![];
         let mut cumsum = 0.0;
         for &(weight, child) in ctr.children.iter() {

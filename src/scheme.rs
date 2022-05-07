@@ -81,7 +81,7 @@ impl ser::SerializeSeq for ListSerializer {
                     tail: cell,
                 };
             }
-            ListSerializer::Heap { head, tail } => {
+            ListSerializer::Heap { head: _, tail } => {
                 let cell = scm_cons(value, SCM_EOL);
                 unsafe { std::ptr::write((*tail as *mut SCM).add(1), cell) };
                 *tail = cell;
@@ -210,11 +210,9 @@ impl ser::SerializeMap for MapSerializer {
         let value = value.serialize(Serializer {
             strings_as_syms: false,
         })?;
-        unsafe {
-            let new_car = scm_cons(key, value);
-            let new_list = scm_cons(new_car, self.list);
-            self.list = new_list;
-        }
+        let new_car = scm_cons(key, value);
+        let new_list = scm_cons(new_car, self.list);
+        self.list = new_list;
         Ok(())
     }
 
@@ -659,7 +657,7 @@ impl<'de> de::SeqAccess<'de> for AlistStructAccess {
 impl<'de> de::Deserializer<'de> for Deserializer {
     type Error = Error;
 
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
@@ -865,7 +863,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
         visitor.visit_seq(ListAccess { scm: self.scm })
     }
 
-    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
@@ -912,8 +910,8 @@ impl<'de> de::Deserializer<'de> for Deserializer {
 
     fn deserialize_enum<V>(
         self,
-        name: &'static str,
-        variants: &'static [&'static str],
+        _name: &'static str,
+        _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where

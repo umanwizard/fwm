@@ -47,7 +47,6 @@ use rust_guile::scm_is_truthy;
 use rust_guile::scm_list_1;
 use rust_guile::scm_make_foreign_object_1;
 use rust_guile::scm_make_foreign_object_type;
-use rust_guile::scm_permanent_object;
 use rust_guile::scm_procedure_p;
 use rust_guile::scm_shell;
 use rust_guile::scm_to_uint64;
@@ -94,7 +93,6 @@ use x11::xlib::Success;
 use x11::xlib::Window;
 use x11::xlib::XAllowEvents;
 use x11::xlib::XButtonEvent;
-use x11::xlib::XButtonPressedEvent;
 use x11::xlib::XClearWindow;
 use x11::xlib::XClientMessageEvent;
 use x11::xlib::XConfigureEvent;
@@ -146,8 +144,6 @@ use std::ffi::c_void;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Debug;
-use std::io::Read;
-use std::io::Write;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::mem::MaybeUninit;
@@ -158,7 +154,6 @@ use std::os::raw::c_ulong;
 use std::os::unix::io::RawFd;
 use std::ptr::null;
 use std::ptr::null_mut;
-use std::time::Duration;
 
 #[derive(Debug)]
 struct ProtectedScm(SCM);
@@ -544,9 +539,7 @@ impl WmState {
 
     unsafe fn update_window_bounds(&mut self, window_idx: usize) {
         let WindowData {
-            client,
-            template,
-            decorations,
+            client, template, ..
         } = self
             .layout
             .try_data(ItemIdx::Window(window_idx))
@@ -594,7 +587,7 @@ impl WmState {
         for cur in &[old_cursor, new_cursor] {
             if let Some(cur) = cur {
                 match cur {
-                    MoveCursor::Split { item, direction } => possibly_affected.push(*item),
+                    MoveCursor::Split { item, .. } => possibly_affected.push(*item),
                     MoveCursor::Into { container, index } => {
                         if let Some(&(_weight, child)) =
                             self.layout.children(*container).get(*index)
@@ -776,7 +769,7 @@ impl WmState {
                 }
             },
             LayoutAction::ItemDestroyed { item } => {
-                if let ItemAndData::Window(idx, data) = &item {
+                if let ItemAndData::Window(idx, _) = &item {
                     if self.focused == Some(*idx) {
                         self.focused = None;
                     }
@@ -798,7 +791,7 @@ impl WmState {
                         self.kill_window(data.decorations.right);
                         self.kill_window(data.decorations.left);
                     },
-                    ItemAndData::Container(i, data) => unsafe {
+                    ItemAndData::Container(_, data) => unsafe {
                         self.kill_window(data.decorations.down);
                         self.kill_window(data.decorations.up);
                         self.kill_window(data.decorations.right);
@@ -1064,7 +1057,6 @@ unsafe extern "C" fn x_io_err(_display: *mut Display) -> i32 {
 const XLIB_CONN: Token = Token(0);
 const FEEDBACK: Token = Token(1);
 
-use mio::unix::pipe::Receiver as MioReceiver;
 use mio::unix::pipe::Sender as MioSender;
 
 static FEEDBACK_TX: once_cell::sync::OnceCell<MioSender> = once_cell::sync::OnceCell::new();
@@ -1312,7 +1304,6 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         while poll.poll(&mut events, None).is_err() {}
         for mio_ev in &events {
             if mio_ev.token() == FEEDBACK {
-                use byteorder::{NativeEndian, ReadBytesExt};
                 while let Ok(f) = feedback_rx.read_u64::<NativeEndian>() {
                     let f = f as SCM;
                     scm_apply_1(f, wm_scm.inner, SCM_EOL);
@@ -1342,13 +1333,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     };
                 }
                 x11::xlib::ClientMessage => {
-                    let XClientMessageEvent {
-                        window,
-                        message_type,
-                        format,
-                        data,
-                        ..
-                    } = e.client_message;
+                    let XClientMessageEvent { message_type, .. } = e.client_message;
                     let p_message_type = XGetAtomName(display, message_type);
                     if p_message_type != null_mut() {
                         let message_type = CStr::from_ptr(p_message_type);
@@ -1435,7 +1420,8 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             };
                             let mut ev2 = XEvent { configure: ev2 };
 
-                            let status = XSendEvent(
+                            // TODO - error handling?
+                            XSendEvent(
                                 display,
                                 ev.window,
                                 1,
@@ -1934,7 +1920,7 @@ unsafe extern "C" fn equalize_lengths(state: SCM, point: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
-unsafe extern "C" fn DEBUG_force_resize(state: SCM, width: SCM, height: SCM) -> SCM {
+unsafe extern "C" fn _debug_force_resize(state: SCM, width: SCM, height: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let width = usize::deserialize(Deserializer { scm: width }).expect("XXX");
     let height = usize::deserialize(Deserializer { scm: height }).expect("XXX");
@@ -2017,7 +2003,7 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     let c = CStr::from_bytes_with_nul(b"fwm-equalize-lengths\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, equalize_lengths as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-DEBUG-force-resize\0").unwrap();
-    scm_c_define_gsubr(c.as_ptr(), 3, 0, 0, DEBUG_force_resize as *mut c_void);
+    scm_c_define_gsubr(c.as_ptr(), 3, 0, 0, _debug_force_resize as *mut c_void);
 
     std::ptr::null_mut()
 }
