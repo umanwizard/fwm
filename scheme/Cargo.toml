@@ -1,0 +1,9 @@
+[package]
+name = "btv-scheme"
+description = "Utilities for rust/scheme interop"
+edition.workspace = true
+version = "0.1.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+rust-guile = { git = "https://gitlab.com/btv/rust-guile", branch = "utils" }

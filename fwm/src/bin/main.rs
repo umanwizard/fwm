@@ -18,8 +18,8 @@ use fwm::LayoutStrategy;
 use fwm::Position;
 use fwm::SlotInContainer;
 
-use fwm::scheme::Deserializer;
-use fwm::scheme::Serializer;
+use btv_scheme::Deserializer;
+use btv_scheme::Serializer;
 use libc::umask;
 use log::error;
 use log::info;

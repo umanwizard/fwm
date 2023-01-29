@@ -3,8 +3,6 @@ use std::collections::BTreeMap;
 use log::info;
 use serde::{Deserialize, Serialize};
 
-pub mod scheme;
-
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub enum LayoutStrategy {
     /// [ * | * | * | * ]. Some call this "vertical", notably vim
