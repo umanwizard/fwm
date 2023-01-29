@@ -133,6 +133,7 @@ use x11::xlib::XSetWindowBackground;
 use x11::xlib::XStringToKeysym;
 use x11::xlib::XSync;
 use x11::xlib::XUngrabKey;
+use x11::xlib::XUnmapWindow;
 use x11::xlib::XWindowChanges;
 use x11::xlib::CWX;
 use x11::xlib::CWY;
@@ -628,6 +629,21 @@ impl WmState {
             self.call_on_point_changed();
         }
     }
+
+    unsafe fn request_unmap(&mut self, window: x11::xlib::Window) {
+        let ret = XUnmapWindow(self.display, window);
+        if ret == 0 {
+            error!("XUnmapWindow call failed for {window}");
+        }
+    }
+
+    unsafe fn request_map(&mut self, window: x11::xlib::Window) {
+        let ret = XMapWindow(self.display, window);
+        if ret == 0 {
+            error!("XMapWindow call failed for {window}");
+        }
+    }
+
 }
 
 impl WmState {
@@ -1190,9 +1206,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"place-new-window\0")),
     );
-    let on_client_unmapped = scm_assq_ref(
+    let on_client_destroyed = scm_assq_ref(
         config,
-        scm_from_utf8_symbol(std::mem::transmute(b"on-client-unmapped\0")),
+        scm_from_utf8_symbol(std::mem::transmute(b"on-client-destroyed\0")),
     );
     let on_point_changed = ProtectedScm(scm_assq_ref(
         config,
@@ -1250,7 +1266,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     // ... rehome windows ...
     // XUngrabServer(display);
 
-    let unmap = |wm: &mut WmState, window| {
+    let on_destroy = |wm: &mut WmState, window| {
         if let Entry::Occupied(oe) = wm.client_window_to_item_idx.entry(window) {
             let idx = oe.remove();
             if wm.layout.exists(ItemIdx::Window(idx)) {
@@ -1263,7 +1279,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
             let point = ItemIdx::Window(idx)
                 .serialize(Serializer::default())
                 .expect("XXX");
-            scm_apply_2(on_client_unmapped, wm_scm.inner, point, SCM_EOL);
+            scm_apply_2(on_client_destroyed, wm_scm.inner, point, SCM_EOL);
         }
         if wm.clear_strut(window) {
             wm.do_resize()
@@ -1552,13 +1568,21 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 x11::xlib::UnmapNotify => {
                     let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
                     let ev = e.unmap;
-                    unmap(wm, ev.window);
+                    if let Some(w_idx) = wm.client_window_to_item_idx.get(&ev.window) {
+                        if let Some(client) = wm
+                            .layout
+                            .try_window_data_mut(*w_idx)
+                            .and_then(|data| data.client.as_mut())
+                        {
+                            client.mapped = false;
+                        }
+                    }
                     wm.ensure_focus();
                 }
                 x11::xlib::DestroyNotify => {
                     let XDestroyWindowEvent { window, .. } = e.destroy_window;
                     let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                    unmap(wm, window);
+                    on_destroy(wm, window);
                 }
                 _ => {}
             }
@@ -1920,6 +1944,26 @@ unsafe extern "C" fn equalize_lengths(state: SCM, point: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
+unsafe extern "C" fn toggle_map(state: SCM, point: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    if let ItemIdx::Window(w_idx) = point {
+        if let Some(client) = wm
+            .layout
+            .try_window_data(w_idx)
+            .and_then(|data| data.client.as_ref())
+        {
+            if client.mapped {
+                wm.request_unmap(client.window)
+            } else {
+                wm.request_map(client.window)
+            }
+        }
+    }
+
+    SCM_UNSPECIFIED
+}
+
 unsafe extern "C" fn _debug_force_resize(state: SCM, width: SCM, height: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let width = usize::deserialize(Deserializer { scm: width }).expect("XXX");
@@ -2002,9 +2046,10 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, get_length as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-equalize-lengths\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, equalize_lengths as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-toggle-map\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, toggle_map as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-DEBUG-force-resize\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 3, 0, 0, _debug_force_resize as *mut c_void);
-
     std::ptr::null_mut()
 }
 

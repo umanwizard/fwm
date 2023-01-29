@@ -19,7 +19,7 @@
   (apply display-all vs)
   (newline))
 
-(define terminal "~/.local/bin/sakura")
+(define terminal "sakura")
 (define exec
   (lambda (cmd)
     (system (string-append cmd "&"))))
@@ -30,10 +30,11 @@
 (exec "xcompmgr")
 
 
+(use-modules (ice-9 ftw))
+
 (define random-wallpaper
   (lambda ()
-    (use-modules (ice-9 ftw))
-    (let* ([wp-dir "./wallpapers/"]
+    (let* ([wp-dir "/home/brennan/wallpapers/"]
            [wps (scandir wp-dir (lambda (f) (or (string-suffix? ".jpg" f) (string-suffix? ".png" f))))]
            [idx (random (length wps))]
            [entry (list-ref wps idx)])
@@ -227,6 +228,7 @@
 							    (clear-wallpaper)
 							    (set-wallpaper)
 							    ))
+     (cons (fwm-parse-key-combo (string-append mod "+backslash")) (at-point fwm-toggle-map))
      (cons (fwm-parse-key-combo (string-append mod "+shift+x"))
 	   (lambda (x)
 	     (let ([wp (wall-back)])
@@ -287,9 +289,9 @@
   (cons 'bindings  bindings)
   (cons 'place-new-window place-new-window)
   (cons 'on-point-changed focus-if-window)
-  (cons 'on-client-unmapped
+  (cons 'on-client-destroyed
 	(lambda (wm point)
-	  (println "on-client-unmapped:" point)
+	  (println "on-client-destroyed:" point)
 	  (if (not (member point protected-points))
 		   (fwm-kill-item-at wm point))
 	  ))
