@@ -192,6 +192,8 @@
   (adjust-length wm pt (lambda (x) (- x 50))))
 
 (use-modules (ice-9 pretty-print))
+
+(define my-cc (lambda (x) #f))
 (define bindings
   (let ([mod "mod3"])
     (list
@@ -228,7 +230,8 @@
 							    (clear-wallpaper)
 							    (set-wallpaper)
 							    ))
-     (cons (fwm-parse-key-combo (string-append mod "+backslash")) (at-point fwm-toggle-map))
+     (cons (fwm-parse-key-combo (string-append mod "+backslash")) ;; (at-point fwm-toggle-map)
+	   (lambda (x) (my-cc)))
      (cons (fwm-parse-key-combo (string-append mod "+shift+x"))
 	   (lambda (x)
 	     (let ([wp (wall-back)])
@@ -284,6 +287,12 @@
 
 (define protected-points '())
 
+
+
+(call/cc
+ (lambda (cc)
+   (set! my-cc cc)))
+
 (fwm-run-wm
  (list
   (cons 'bindings  bindings)
@@ -293,18 +302,18 @@
 	(lambda (wm point)
 	  (println "on-client-destroyed:" point)
 	  (if (not (member point protected-points))
-		   (fwm-kill-item-at wm point))
+	      (fwm-kill-item-at wm point))
 	  ))
   (cons 'on-button1-pressed
 	(lambda (wm point)
-      (let ([point (rust-option-to-scheme point)])
-          (println "on-button1-pressed:" point)
-          (if point
-              (fwm-set-point wm point)))))
+	  (let ([point (rust-option-to-scheme point)])
+            (println "on-button1-pressed:" point)
+            (if point
+		(fwm-set-point wm point)))))
   
- (cons 'after-start
-       (lambda (_)
-	 (exec "xmobar")
-     (exec "stalonetray --window-strut top")))
- ))
+  (cons 'after-start
+	(lambda (_)
+	  (exec "xmobar")
+	  (exec "stalonetray --window-strut top")))
+  ))
 

@@ -1198,6 +1198,7 @@ unsafe fn get_strut(display: *mut Display, window: Window) -> Option<StrutPartia
 }
 
 unsafe extern "C" fn run_wm(config: SCM) -> SCM {
+    info!("entered run_wm");
     let bindings = scm_assq_ref(
         config,
         scm_from_utf8_symbol(std::mem::transmute(b"bindings\0")),
@@ -1315,6 +1316,13 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         0,
         0,
     );
+    struct Dbg;
+    impl Drop for Dbg {
+        fn drop(&mut self) {
+            info!("Exiting run_wm");
+        }
+    }
+    let _d = Dbg;
     loop {
         let mut e = MaybeUninit::<XEvent>::uninit();
         while poll.poll(&mut events, None).is_err() {}
