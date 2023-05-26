@@ -651,19 +651,21 @@ impl WmState {
     pub fn new<'a>(
         display: *mut x11::xlib::Display,
         root: x11::xlib::Window,
-        bounds: WindowBounds,
+        size: AreaSize,
         on_point_changed: ProtectedScm,
     ) -> Self {
         let delete_window_atom =
             unsafe { XInternAtom(display, std::mem::transmute(b"WM_DELETE_WINDOW\0"), 0) };
         let protocols_atom =
             unsafe { XInternAtom(display, std::mem::transmute(b"WM_PROTOCOLS\0"), 0) };
+        let layout = Layout::new(size, ContainerDataConstructor { display, root }, 6);
+        let displayed_root = layout.displayed_root();
         Self {
             client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
             on_point_changed,
-            layout: Layout::new(bounds, ContainerDataConstructor { display, root }, 6),
-            point: ItemIdx::Container(0),
+            layout,
+            point: ItemIdx::Container(displayed_root),
             cursor: None,
             focused: None,
             struts: Default::default(),
@@ -1244,18 +1246,21 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
         width: screen.width.try_into().unwrap(),
         height: screen.height.try_into().unwrap(),
     };
-    let root_bounds = WindowBounds {
-        position: Default::default(),
-        content: root_size,
-    };
 
-    let mut wm = WmState::new(display, root, root_bounds, on_point_changed);
+    let mut wm = WmState::new(display, root, root_size, on_point_changed);
     wm.root_size = root_size;
 
-    wm.do_and_recompute(|_wm| {
+    wm.do_and_recompute(|wm| {
         Some(LayoutAction::NewBounds {
-            idx: ItemIdx::Container(0),
-            bounds: root_bounds,
+            idx: ItemIdx::Container(wm.layout.displayed_root()),
+            bounds: WindowBounds {
+                content: root_size,
+                position: Position {
+                    x: 0,
+                    y: 0,
+                    root_ctr: wm.layout.displayed_root()
+                }
+            }
         })
     });
 
@@ -1505,7 +1510,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                     }),
                                     decorations,
                                     template: BASIC_DECO,
-                                });
+                                },
+                                    wm.layout.displayed_root(),
+                                );
                                 wm.client_window_to_item_idx.insert(window, w_idx);
                                 let actions =
                                     wm.layout.r#move(ItemIdx::Window(w_idx), insert_cursor);
@@ -1737,7 +1744,7 @@ unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
         let topo_next = wm.layout.topological_next(wm.point);
         let actions = wm.layout.destroy(point);
         if !wm.layout.exists(wm.point) {
-            wm.point = topo_next.unwrap_or_else(|| wm.layout.topological_last());
+            wm.point = topo_next.unwrap_or_else(|| wm.layout.topological_last(wm.layout.displayed_root()));
         }
         actions
     });
@@ -1778,7 +1785,7 @@ unsafe extern "C" fn new_window_at(state: SCM, cursor: SCM) -> SCM {
         client: None,
         decorations,
         template: BASIC_DECO,
-    });
+    }, wm.layout.displayed_root());
     match cur {
         MoveOrReplace::Move(cur) => {
             wm.do_and_recompute(|wm| wm.layout.r#move(ItemIdx::Window(win), cur));
@@ -1871,6 +1878,7 @@ unsafe extern "C" fn nth_child(state: SCM, container: SCM, index: SCM) -> SCM {
     let container = usize::deserialize(Deserializer { scm: container }).expect("XXX");
     let index = usize::deserialize(Deserializer { scm: index }).expect("XXX");
     let cl = ChildLocation { container, index };
+    println!("{cl:?}");
     let item = wm.layout.item_from_child_location(cl);
     let scm = item.serialize(Serializer::default()).unwrap();
     scm
@@ -1880,7 +1888,7 @@ unsafe extern "C" fn child_location(state: SCM, point: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
     let loc = wm.layout.child_location(point).unwrap_or(ChildLocation {
-        container: 0,
+        container: wm.layout.displayed_root(),
         index: 0,
     });
     let scm = loc.serialize(Serializer::default()).unwrap();

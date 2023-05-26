@@ -25,14 +25,14 @@ pub struct AreaSize {
     pub width: usize,
 }
 
-#[derive(Debug, Default, Eq, PartialEq, Copy, Clone, Serialize, Deserialize, Hash)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize, Hash)]
 pub struct Position {
     pub x: usize,
     pub y: usize,
     pub root_ctr: usize,
 }
 
-#[derive(Debug, Default, Eq, PartialEq, Copy, Clone, Serialize, Deserialize, Hash)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize, Deserialize, Hash)]
 pub struct WindowBounds {
     pub content: AreaSize,
     pub position: Position,
@@ -455,6 +455,8 @@ where
                 );
                 let ctr = self.containers.get_mut(&parent).unwrap();
                 ctr.children[index_in_parent].1 = ItemIdx::Container(next_c_idx);
+                self.set_parent_unchecked(inserted, Some(next_c_idx));
+                self.set_parent_unchecked(split, Some(next_c_idx));                
                 next_c_idx
             }
             None => {
@@ -475,6 +477,11 @@ where
                     }
                     _ => {
                         let next_c_idx = self.container_idgen.next_id();
+                        let root_children = self.children(root_ctr_idx).iter().map(|(_, idx)| *idx).collect::<Vec<_>>();
+                        for child in root_children {
+                            self.set_parent_unchecked(child, Some(next_c_idx))
+                        }
+
                         let Container {
                             strategy,
                             children,
@@ -485,7 +492,14 @@ where
                         let new_ctr = Container {
                             strategy: *strategy,
                             children: std::mem::take(children),
-                            bounds: Default::default(),
+                            bounds: WindowBounds {
+                                content: Default::default(),
+                                position: Position {
+                                    x: 0,
+                                    y: 0,
+                                    root_ctr: root_ctr_idx,
+                                }
+                            },
                             inter: *inter,
                             parent: Some(root_ctr_idx),
                             data: self.cctor.as_mut().expect("Must set cctor!").construct(),
@@ -509,6 +523,7 @@ where
                                 padding: self.default_padding,
                             },
                         );
+                        self.set_parent_unchecked(inserted, Some(root_ctr_idx));
                         root_ctr_idx
                     }
                 }
@@ -755,24 +770,33 @@ where
         })
     }
     pub fn cursor_before(&self, point: ItemIdx) -> MoveCursor {
+        let root_ctr = self.bounds(point).position.root_ctr;
         match self.parent_container(point) {
             Some(parent) => MoveCursor::Into {
                 container: parent,
                 index: self.index_in_parent(point).unwrap(),
             },
             None => MoveCursor::Split {
-                item: ItemIdx::Container(0),
-                direction: match self.containers[&0].strategy {
+                item: ItemIdx::Container(root_ctr),
+                direction: match self.containers[&root_ctr].strategy {
                     LayoutStrategy::Horizontal => Direction::Left,
                     LayoutStrategy::Vertical => Direction::Up,
                 },
             },
         }
     }
-    pub fn new(bounds: WindowBounds, mut cctor: CCtor, default_padding: usize) -> Self {
+    pub fn new(size: AreaSize, mut cctor: CCtor, default_padding: usize) -> Self {
         let root_data = cctor.construct();
         let mut container_idgen = 42; // Not 0, in order to crash loudly if we're doing something special on 0.
         let first_root_id = container_idgen.next_id();
+        let bounds = WindowBounds {
+            content: size,
+            position: Position {
+                x: 0,
+                y: 0,
+                root_ctr: first_root_id
+            }
+        };
         let roots = [(first_root_id, bounds)].into_iter().collect();
         let mut this = Self {
             windows: Default::default(),
@@ -843,8 +867,8 @@ where
     pub fn topological_next(&self, item: ItemIdx) -> Option<ItemIdx> {
         self.topo_next_recursive(item)
     }
-    pub fn topological_last(&self) -> ItemIdx {
-        let mut cur = ItemIdx::Container(0);
+    pub fn topological_last(&self, root_ctr: usize) -> ItemIdx {
+        let mut cur = ItemIdx::Container(root_ctr);
         loop {
             match cur {
                 ItemIdx::Container(c_idx) => {
@@ -957,12 +981,19 @@ where
     // create unparented windows (even temporarily) ?
     //
     // If so, explain why here.
-    pub fn alloc_window(&mut self, data: W) -> usize {
+    pub fn alloc_window(&mut self, data: W, root_ctr: usize) -> usize {
         let next_idx = self.window_idgen.next_id();
         self.windows.insert(
             next_idx,
             Window {
-                bounds: Default::default(),
+                bounds: WindowBounds {
+                    content: Default::default(),
+                    position: Position {
+                        x: 0,
+                        y: 0,
+                        root_ctr,
+                    }
+                },
                 parent: None,
                 data,
             },
