@@ -29,6 +29,7 @@ pub struct AreaSize {
 pub struct Position {
     pub x: usize,
     pub y: usize,
+    pub root_ctr: usize,
 }
 
 #[derive(Debug, Default, Eq, PartialEq, Copy, Clone, Serialize, Deserialize, Hash)]
@@ -39,6 +40,7 @@ pub struct WindowBounds {
 
 impl WindowBounds {
     pub fn contains(&self, position: Position) -> bool {
+        self.position.root_ctr == position.root_ctr && 
         self.position.x <= position.x
             && self.position.y <= position.y
             && position.x < (self.position.x + self.content.width)
@@ -178,7 +180,8 @@ impl IdGen for usize {
 pub struct Layout<W, C, CCtor> {
     windows: BTreeMap<usize, Window<W>>,
     containers: BTreeMap<usize, Container<C>>,
-    root_bounds: WindowBounds,
+    roots: BTreeMap<usize, WindowBounds>,
+    displayed_root: usize,
     default_padding: usize,
     #[serde(skip)]
     cctor: Option<CCtor>,
@@ -391,6 +394,34 @@ where
         }
         None
     }
+
+    /// Return the bounds of the given root item.
+    /// Panics if the item is not a root.
+    pub fn root_bounds(
+        &self,
+        root: ItemIdx
+    ) -> WindowBounds {
+        let c_idx = match root {
+            ItemIdx::Window(_) => panic!("Windows cannot be roots"),
+            ItemIdx::Container(c_idx) => c_idx,
+        };
+        let bounds = self.roots.get(&c_idx).expect("Item was not a root");
+        *bounds
+    }
+
+    fn set_parent_unchecked(&mut self, child: ItemIdx, parent: Option<usize>) {
+        match child {
+            ItemIdx::Container(c_idx) => {
+                let m = self.containers.get_mut(&c_idx).unwrap();
+                m.parent = parent;
+            },
+            ItemIdx::Window(w_idx) => {
+                let m = self.windows.get_mut(&w_idx).unwrap();
+                m.parent = parent;
+            }
+        };
+    }
+    
     /// Put a container where `split` was, and put `inserted` and `split` into that container, their order controlled by `inserted_first`.
     /// Returns the topmost modified container, but does not itself do layout.
     fn split(
@@ -430,12 +461,16 @@ where
                 next_c_idx
             }
             None => {
-                let root = self.containers.get_mut(&0).unwrap();
+                let ItemIdx::Container(root_ctr_idx) = split else {
+                    panic!("Roots must be containers");
+                };
+                let root = self.containers.get_mut(&root_ctr_idx).unwrap();
                 match root.children.len() {
                     0 => {
                         root.strategy = strategy;
                         root.children.push((1.0, inserted));
-                        0
+                        self.set_parent_unchecked(inserted, Some(root_ctr_idx));
+                        root_ctr_idx
                     }
                     1 => {
                         let child = root.children[0].1;
@@ -449,20 +484,20 @@ where
                             bounds,
                             inter,
                             ..
-                        } = self.containers.get_mut(&0).unwrap();
+                        } = self.containers.get_mut(&root_ctr_idx).unwrap();
                         let new_ctr = Container {
                             strategy: *strategy,
                             children: std::mem::take(children),
                             bounds: Default::default(),
                             inter: *inter,
-                            parent: Some(0),
+                            parent: Some(root_ctr_idx),
                             data: self.cctor.as_mut().expect("Must set cctor!").construct(),
                             padding: self.default_padding,
                         };
                         let bounds = *bounds;
                         self.containers.insert(next_c_idx, new_ctr);
                         self.containers.insert(
-                            0,
+                            root_ctr_idx,
                             Container {
                                 strategy: LayoutStrategy::Horizontal,
                                 children: if inserted_first {
@@ -477,7 +512,7 @@ where
                                 padding: self.default_padding,
                             },
                         );
-                        0
+                        root_ctr_idx
                     }
                 }
             }
@@ -607,10 +642,12 @@ where
                 LayoutStrategy::Vertical => Position {
                     x: next_window_origin.x,
                     y: next_window_origin.y + content.height + inter,
+                    root_ctr: next_window_origin.root_ctr,
                 },
                 LayoutStrategy::Horizontal => Position {
                     y: next_window_origin.y,
                     x: next_window_origin.x + content.width + inter,
+                    root_ctr: next_window_origin.root_ctr,
                 },
             };
 
@@ -664,19 +701,6 @@ where
             ItemIdx::Container(idx) => self.containers.get_mut(&idx).unwrap().parent = Some(to_ctr),
             ItemIdx::Window(idx) => self.windows.get_mut(&idx).unwrap().parent = Some(to_ctr),
         };
-        // If we created a split, we need to update the old
-        // item's parent to be the new container.
-        // [XXX] why isn't this handled by `Layout::split` above? I must have had a reason.
-        if let MoveCursor::Split { item, .. } = to {
-            match item {
-                ItemIdx::Container(idx) => {
-                    if idx != 0 {
-                        self.containers.get_mut(&idx).unwrap().parent = Some(to_ctr)
-                    }
-                }
-                ItemIdx::Window(idx) => self.windows.get_mut(&idx).unwrap().parent = Some(to_ctr),
-            };
-        }
         to_ctr
     }
     /// Returns None for one past end
@@ -686,7 +710,7 @@ where
         assert!(index <= ctr.children.len());
         ctr.children.get(index).map(|(_, idx)| *idx)
     }
-    /// Returns None for the root
+    /// Returns None for a root
     pub fn child_location(&self, item: ItemIdx) -> Option<ChildLocation> {
         self.parent_container(item).map(|container| {
             let index = self.containers[&container]
@@ -712,6 +736,9 @@ where
     C: Serialize + for<'d> Deserialize<'d>,
     CCtor: Constructor<Item = C>,
 {
+    pub fn displayed_root(&self) -> usize {
+        self.displayed_root
+    }
     pub fn equalize_container_children(&mut self, c_idx: usize) -> Vec<LayoutAction<W, C>> {
         for (weight, _child) in &mut self.containers.get_mut(&c_idx).unwrap().children {
             *weight = 1.0;
@@ -719,9 +746,6 @@ where
         let mut out = vec![];
         self.layout(ItemIdx::Container(c_idx), &mut out);
         out
-    }
-    pub fn root_bounds(&self) -> WindowBounds {
-        self.root_bounds
     }
     pub fn index_in_parent(&self, item: ItemIdx) -> Option<usize> {
         self.parent_container(item).map(|parent| {
@@ -750,17 +774,21 @@ where
     }
     pub fn new(bounds: WindowBounds, mut cctor: CCtor, default_padding: usize) -> Self {
         let root_data = cctor.construct();
+        let mut container_idgen = 42; // Not 0, in order to crash loudly if we're doing something special on 0.   
+        let first_root_id = container_idgen.next_id();
+        let roots = [(first_root_id, bounds)].into_iter().collect();
         let mut this = Self {
             windows: Default::default(),
             containers: Default::default(),
-            root_bounds: bounds,
+            roots,
+            displayed_root: first_root_id,
             cctor: Some(cctor),
             default_padding,
-            container_idgen: 0,
-            window_idgen: 0,
+            container_idgen,
+            window_idgen: 123, // Not 0, see above
         };
         this.containers.insert(
-            this.container_idgen.next_id(),
+            first_root_id,
             Container {
                 bounds,
                 children: Default::default(),
@@ -781,13 +809,14 @@ where
         C: std::fmt::Debug,
         W: std::fmt::Debug,
     {
+        let root_ctr = bounds.position.root_ctr;
         info!("Resizing in wb: {:?}", bounds);
-        self.containers.get_mut(&0).unwrap().bounds = bounds;
-        self.root_bounds = bounds;
+        self.containers.get_mut(&root_ctr).unwrap().bounds = bounds;
+        *(self.roots.get_mut(&root_ctr).unwrap()) = bounds;
         let mut out = vec![];
-        self.layout(ItemIdx::Container(0), &mut out);
+        self.layout(ItemIdx::Container(root_ctr), &mut out);
         out.push(LayoutAction::NewBounds {
-            idx: ItemIdx::Container(0),
+            idx: ItemIdx::Container(root_ctr),
             bounds,
         });
         out
@@ -854,10 +883,7 @@ where
 
                 let gp_ctr = self.containers.get_mut(&grandparent).unwrap();
                 gp_ctr.children[index_in_gp].1 = child;
-                *(match child {
-                    ItemIdx::Container(idx) => &mut self.containers.get_mut(&idx).unwrap().parent,
-                    ItemIdx::Window(idx) => &mut self.windows.get_mut(&idx).unwrap().parent,
-                }) = Some(grandparent);
+                self.set_parent_unchecked(child, Some(grandparent));
                 return Some(grandparent);
             }
         }
@@ -885,19 +911,21 @@ where
             .collect::<Vec<_>>();
         match parent {
             None => {
-                // we destroyed the root, but there must always be a root.
-                self.containers.insert(
-                    0,
-                    Container {
-                        strategy: LayoutStrategy::Horizontal,
-                        children: vec![],
-                        parent: None,
-                        inter: Default::default(),
-                        bounds: self.root_bounds,
-                        data: self.cctor.as_mut().expect("Must set cctor!").construct(),
-                        padding: self.default_padding,
-                    },
-                );
+                // we destroyed the displayed root, but there must always be a displayed root.
+                if ItemIdx::Container(self.displayed_root) == item {
+                    self.containers.insert(
+                        self.displayed_root,
+                        Container {
+                            strategy: LayoutStrategy::Horizontal,
+                            children: vec![],
+                            parent: None,
+                            inter: Default::default(),
+                            bounds: self.root_bounds(item),
+                            data: self.cctor.as_mut().expect("Must set cctor!").construct(),
+                            padding: self.default_padding,
+                        },
+                    );
+                }
             }
             Some(mut parent) => {
                 let index_in_parent = index_in_parent.unwrap();
@@ -928,6 +956,10 @@ where
         }
         false
     }
+    // [XXX] rethink this. Is it right to allow the public API to
+    // create unparented windows (even temporarily) ?
+    //
+    // If so, explain why here.
     pub fn alloc_window(&mut self, data: W) -> usize {
         let next_idx = self.window_idgen.next_id();
         self.windows.insert(
@@ -944,7 +976,7 @@ where
         if self.is_ancestor(from, to.item()) {
             panic!()
         }
-        // we know `from` is not the root, because of the ancestry check above.
+        // we know `from` is not a root, because of the ancestry check above.
         // So the unwrap is safe.
         let mut from_parent = self.parent_container(from);
         let mut result = vec![];
@@ -1003,12 +1035,11 @@ where
         dir: Direction,
         point: Option<Position>,
     ) -> Option<ItemIdx> {
-        if from == ItemIdx::Container(0) {
-            None
-        } else {
-            self.navigate2(self.child_location(from).unwrap(), dir, point, false, true)
+
+        self.child_location(from).and_then(|cl| {
+            self.navigate2(cl, dir, point, false, true)
                 .map(|cl| self.item_from_child_location(cl).unwrap())
-        }
+        })        
     }
     pub fn navigate2(
         &self,
@@ -1026,12 +1057,14 @@ where
         may_descend: bool,
     ) -> Option<ChildLocation> {
         let orig_parent_container_idx = parent_container_idx;
-        //        let mut ancestor = None;
-        // let mut cur = from;
         let parent_container = &self.containers[&parent_container_idx];
         assert!(index_in_parent <= parent_container.children.len());
         assert!(between_items || index_in_parent < parent_container.children.len());
-        let point = point.unwrap_or_else(|| {
+        let point = point.and_then(|point| if point.root_ctr == parent_container.bounds.position.root_ctr {
+            Some(point)
+        } else {
+            None
+        }).unwrap_or_else(|| {
             parent_container
                 .children
                 .get(index_in_parent)
@@ -1041,11 +1074,13 @@ where
                         x: parent_container.bounds.position.x
                             + parent_container.bounds.content.width,
                         y: parent_container.bounds.position.y,
+                        root_ctr: parent_container.bounds.position.root_ctr,
                     },
                     LayoutStrategy::Vertical => Position {
                         x: parent_container.bounds.position.x,
                         y: parent_container.bounds.position.y
                             + parent_container.bounds.content.height,
+                        root_ctr: parent_container.bounds.position.root_ctr,
                     },
                 })
         });
@@ -1119,7 +1154,7 @@ where
                                 ctr.children.len() - 1
                             }
                         } else {
-                            let Position { x, y } = point;
+                            let Position { x, y, root_ctr: _ } = point;
                             let seek_coord = if move_horizontal { y } else { x };
                             let idx = ctr
                                 .children
@@ -1189,6 +1224,7 @@ where
                     position: Position {
                         x: container.bounds.position.x + container.bounds.content.width,
                         y: container.bounds.position.y,
+                        root_ctr: container.bounds.position.root_ctr,
                     },
                 },
                 LayoutStrategy::Vertical => WindowBounds {
@@ -1199,6 +1235,7 @@ where
                     position: Position {
                         x: container.bounds.position.x,
                         y: container.bounds.position.y + container.bounds.content.height,
+                        root_ctr: container.bounds.position.root_ctr,
                     },
                 },
             };
@@ -1233,6 +1270,7 @@ where
                 position: Position {
                     x: container.bounds.position.x + cum_distance as usize,
                     y: container.bounds.position.y + container.padding,
+                    root_ctr: container.bounds.position.root_ctr,
                 },
             },
             LayoutStrategy::Vertical => WindowBounds {
@@ -1243,6 +1281,7 @@ where
                 position: Position {
                     x: container.bounds.position.x + container.padding,
                     y: container.bounds.position.y + cum_distance as usize,
+                    root_ctr: container.bounds.position.root_ctr,
                 },
             },
         }

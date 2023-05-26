@@ -480,17 +480,19 @@ impl WmState {
             .root_size
             .height
             .saturating_sub((self.current_strut.top + self.current_strut.bottom) as usize);
+        let root_ctr = self.layout.displayed_root();
         let new_bounds = WindowBounds {
             position: Position {
                 x: self.current_strut.left as usize,
                 y: self.current_strut.top as usize,
+                root_ctr,
             },
             content: AreaSize {
                 height: content_height,
                 width: content_width,
             },
         };
-        if new_bounds != self.layout.root_bounds() {
+        if new_bounds != self.layout.root_bounds(ItemIdx::Container(root_ctr)) {
             self.do_and_recompute(|wm| wm.layout.resize(new_bounds))
         }
     }
@@ -1365,19 +1367,21 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                         y_root,
                         ..
                     } = e.button;
-                    let position = Position {
-                        x: x_root as usize,
-                        y: y_root as usize,
-                    };
-                    let w_idx = {
+                    let point = {
                         let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                        wm.layout.window_at(position)
+                        let position = Position {
+                            x: x_root as usize,
+                            y: y_root as usize,
+                            root_ctr: wm.layout.displayed_root(),
+                        };
+                        let w_idx = wm.layout.window_at(position);
+                        let point = w_idx.map(|w_idx| ItemIdx::Window(w_idx));
+                        info!(
+                            "Button pressed at position {:?}, corresponding point {:?}",
+                            position, point
+                        );
+                        point
                     };
-                    let point = w_idx.map(|w_idx| ItemIdx::Window(w_idx));
-                    info!(
-                        "Button pressed at position {:?}, corresponding point {:?}",
-                        position, point
-                    );
                     scm_apply_2(
                         on_button1_pressed,
                         wm_scm.inner,
