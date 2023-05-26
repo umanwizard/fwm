@@ -645,7 +645,6 @@ impl WmState {
             error!("XMapWindow call failed for {window}");
         }
     }
-
 }
 
 impl WmState {

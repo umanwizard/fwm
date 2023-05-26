@@ -40,8 +40,8 @@ pub struct WindowBounds {
 
 impl WindowBounds {
     pub fn contains(&self, position: Position) -> bool {
-        self.position.root_ctr == position.root_ctr && 
-        self.position.x <= position.x
+        self.position.root_ctr == position.root_ctr
+            && self.position.x <= position.x
             && self.position.y <= position.y
             && position.x < (self.position.x + self.content.width)
             && position.y < (self.position.y + self.content.height)
@@ -397,10 +397,7 @@ where
 
     /// Return the bounds of the given root item.
     /// Panics if the item is not a root.
-    pub fn root_bounds(
-        &self,
-        root: ItemIdx
-    ) -> WindowBounds {
+    pub fn root_bounds(&self, root: ItemIdx) -> WindowBounds {
         let c_idx = match root {
             ItemIdx::Window(_) => panic!("Windows cannot be roots"),
             ItemIdx::Container(c_idx) => c_idx,
@@ -414,14 +411,14 @@ where
             ItemIdx::Container(c_idx) => {
                 let m = self.containers.get_mut(&c_idx).unwrap();
                 m.parent = parent;
-            },
+            }
             ItemIdx::Window(w_idx) => {
                 let m = self.windows.get_mut(&w_idx).unwrap();
                 m.parent = parent;
             }
         };
     }
-    
+
     /// Put a container where `split` was, and put `inserted` and `split` into that container, their order controlled by `inserted_first`.
     /// Returns the topmost modified container, but does not itself do layout.
     fn split(
@@ -774,7 +771,7 @@ where
     }
     pub fn new(bounds: WindowBounds, mut cctor: CCtor, default_padding: usize) -> Self {
         let root_data = cctor.construct();
-        let mut container_idgen = 42; // Not 0, in order to crash loudly if we're doing something special on 0.   
+        let mut container_idgen = 42; // Not 0, in order to crash loudly if we're doing something special on 0.
         let first_root_id = container_idgen.next_id();
         let roots = [(first_root_id, bounds)].into_iter().collect();
         let mut this = Self {
@@ -1035,11 +1032,10 @@ where
         dir: Direction,
         point: Option<Position>,
     ) -> Option<ItemIdx> {
-
         self.child_location(from).and_then(|cl| {
             self.navigate2(cl, dir, point, false, true)
                 .map(|cl| self.item_from_child_location(cl).unwrap())
-        })        
+        })
     }
     pub fn navigate2(
         &self,
@@ -1060,30 +1056,34 @@ where
         let parent_container = &self.containers[&parent_container_idx];
         assert!(index_in_parent <= parent_container.children.len());
         assert!(between_items || index_in_parent < parent_container.children.len());
-        let point = point.and_then(|point| if point.root_ctr == parent_container.bounds.position.root_ctr {
-            Some(point)
-        } else {
-            None
-        }).unwrap_or_else(|| {
-            parent_container
-                .children
-                .get(index_in_parent)
-                .map(|&(_weight, child)| self.bounds(child).position)
-                .unwrap_or_else(|| match parent_container.strategy {
-                    LayoutStrategy::Horizontal => Position {
-                        x: parent_container.bounds.position.x
-                            + parent_container.bounds.content.width,
-                        y: parent_container.bounds.position.y,
-                        root_ctr: parent_container.bounds.position.root_ctr,
-                    },
-                    LayoutStrategy::Vertical => Position {
-                        x: parent_container.bounds.position.x,
-                        y: parent_container.bounds.position.y
-                            + parent_container.bounds.content.height,
-                        root_ctr: parent_container.bounds.position.root_ctr,
-                    },
-                })
-        });
+        let point = point
+            .and_then(|point| {
+                if point.root_ctr == parent_container.bounds.position.root_ctr {
+                    Some(point)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| {
+                parent_container
+                    .children
+                    .get(index_in_parent)
+                    .map(|&(_weight, child)| self.bounds(child).position)
+                    .unwrap_or_else(|| match parent_container.strategy {
+                        LayoutStrategy::Horizontal => Position {
+                            x: parent_container.bounds.position.x
+                                + parent_container.bounds.content.width,
+                            y: parent_container.bounds.position.y,
+                            root_ctr: parent_container.bounds.position.root_ctr,
+                        },
+                        LayoutStrategy::Vertical => Position {
+                            x: parent_container.bounds.position.x,
+                            y: parent_container.bounds.position.y
+                                + parent_container.bounds.content.height,
+                            root_ctr: parent_container.bounds.position.root_ctr,
+                        },
+                    })
+            });
 
         let mut parent_container_idx = Some(parent_container_idx);
         let mut ancestor = None;
