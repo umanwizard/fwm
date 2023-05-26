@@ -632,17 +632,61 @@ impl WmState {
         }
     }
 
-    unsafe fn request_unmap(&mut self, window: x11::xlib::Window) {
+    unsafe fn request_unmap(&self, window: x11::xlib::Window) {
         let ret = XUnmapWindow(self.display, window);
         if ret == 0 {
             error!("XUnmapWindow call failed for {window}");
         }
     }
 
-    unsafe fn request_map(&mut self, window: x11::xlib::Window) {
+    unsafe fn request_map(&self, window: x11::xlib::Window) {
         let ret = XMapWindow(self.display, window);
         if ret == 0 {
             error!("XMapWindow call failed for {window}");
+        }
+    }
+
+    unsafe fn unmap_all(&self) {
+        for item in self
+            .layout
+            .iter_descendants(ItemIdx::Container(self.layout.displayed_root()))
+        {
+            if let Some(decos) = self.try_decorations(item) {
+                for deco in [decos.up, decos.left, decos.down, decos.right] {
+                    self.request_unmap(deco);
+                }
+            }
+            if let ItemIdx::Window(w_idx) = item {
+                if let Some(client) = self
+                    .layout
+                    .try_window_data(w_idx)
+                    .and_then(|data| data.client.as_ref())
+                {
+                    self.request_unmap(client.window);
+                }
+            }
+        }
+    }
+
+    unsafe fn map_all(&self) {
+        for item in self
+            .layout
+            .iter_descendants(ItemIdx::Container(self.layout.displayed_root()))
+        {
+            if let Some(decos) = self.try_decorations(item) {
+                for deco in [decos.up, decos.left, decos.down, decos.right] {
+                    self.request_map(deco);
+                }
+            }
+            if let ItemIdx::Window(w_idx) = item {
+                if let Some(client) = self
+                    .layout
+                    .try_window_data(w_idx)
+                    .and_then(|data| data.client.as_ref())
+                {
+                    self.request_map(client.window);
+                }
+            }
         }
     }
 }
@@ -1960,19 +2004,19 @@ unsafe extern "C" fn equalize_lengths(state: SCM, point: SCM) -> SCM {
     SCM_UNSPECIFIED
 }
 
-unsafe extern "C" fn toggle_map(state: SCM, point: SCM) -> SCM {
+unsafe extern "C" fn show_root(state: SCM, root: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
-    let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
-    if let ItemIdx::Window(w_idx) = point {
-        if let Some(client) = wm
-            .layout
-            .try_window_data(w_idx)
-            .and_then(|data| data.client.as_ref())
-        {
-            if client.mapped {
-                wm.request_unmap(client.window)
+    let root = Option::<usize>::deserialize(Deserializer { scm: root }).expect("XXX");
+
+    match root {
+        None => {
+            wm.unmap_all();
+        }
+        Some(root) => {
+            if root == wm.layout.displayed_root() {
+                wm.map_all();
             } else {
-                wm.request_map(client.window)
+                todo!()
             }
         }
     }
@@ -2062,8 +2106,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, get_length as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-equalize-lengths\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, equalize_lengths as *mut c_void);
-    let c = CStr::from_bytes_with_nul(b"fwm-toggle-map\0").unwrap();
-    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, toggle_map as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-show-root\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, show_root as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-DEBUG-force-resize\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 3, 0, 0, _debug_force_resize as *mut c_void);
     std::ptr::null_mut()
