@@ -180,8 +180,7 @@ impl IdGen for usize {
 pub struct Layout<W, C, CCtor> {
     windows: BTreeMap<usize, Window<W>>,
     containers: BTreeMap<usize, Container<C>>,
-    roots: BTreeMap<usize, WindowBounds>,
-    displayed_root: usize,
+    // roots: BTreeMap<usize, WindowBounds>,
     default_padding: usize,
     #[serde(skip)]
     cctor: Option<CCtor>,
@@ -395,16 +394,16 @@ where
         None
     }
 
-    /// Return the bounds of the given root item.
-    /// Panics if the item is not a root.
-    pub fn root_bounds(&self, root: ItemIdx) -> WindowBounds {
-        let c_idx = match root {
-            ItemIdx::Window(_) => panic!("Windows cannot be roots"),
-            ItemIdx::Container(c_idx) => c_idx,
-        };
-        let bounds = self.roots.get(&c_idx).expect("Item was not a root");
-        *bounds
-    }
+    // /// Return the bounds of the given root item.
+    // /// Panics if the item is not a root.
+    // pub fn root_bounds(&self, root: ItemIdx) -> WindowBounds {
+    //     let c_idx = match root {
+    //         ItemIdx::Window(_) => panic!("Windows cannot be roots"),
+    //         ItemIdx::Container(c_idx) => c_idx,
+    //     };
+    //     let bounds = self.roots.get(&c_idx).expect("Item was not a root");
+    //     *bounds
+    // }
 
     fn set_parent_unchecked(&mut self, child: ItemIdx, parent: Option<usize>) {
         match child {
@@ -752,9 +751,6 @@ where
     C: Serialize + for<'d> Deserialize<'d>,
     CCtor: Constructor<Item = C>,
 {
-    pub fn displayed_root(&self) -> usize {
-        self.displayed_root
-    }
     pub fn equalize_container_children(&mut self, c_idx: usize) -> Vec<LayoutAction<W, C>> {
         for (weight, _child) in &mut self.containers.get_mut(&c_idx).unwrap().children {
             *weight = 1.0;
@@ -789,42 +785,67 @@ where
             },
         }
     }
-    pub fn new(size: AreaSize, mut cctor: CCtor, default_padding: usize) -> Self {
-        let root_data = cctor.construct();
-        let mut container_idgen = 42; // Not 0, in order to crash loudly if we're doing something special on 0.
-        let first_root_id = container_idgen.next_id();
+    /// Make a new root. Returns its container index.
+    pub fn alloc_root(&mut self, size: AreaSize, data: C) -> usize {
+        let idx = self.container_idgen.next_id();
         let bounds = WindowBounds {
             content: size,
             position: Position {
                 x: 0,
                 y: 0,
-                root_ctr: first_root_id,
+                root_ctr: idx,
             },
         };
-        let roots = [(first_root_id, bounds)].into_iter().collect();
-        let mut this = Self {
+
+        self.containers.insert(
+            idx,
+            Container {
+                bounds,
+                inter: 0,
+                data,
+                parent: None,
+                strategy: LayoutStrategy::Horizontal,
+                padding: self.default_padding,
+                children: vec![],
+            },
+        );
+        idx
+    }
+    pub fn new(cctor: CCtor, default_padding: usize) -> Self {
+        // let root_data = cctor.construct();
+        let mut container_idgen = 42; // Not 0, in order to crash loudly if we're doing something special on 0.
+                                      // let first_root_id = container_idgen.next_id();
+                                      // let bounds = WindowBounds {
+                                      //     content: size,
+                                      //     position: Position {
+                                      //         x: 0,
+                                      //         y: 0,
+                                      //         root_ctr: first_root_id,
+                                      //     },
+                                      // };
+                                      // let roots = [(first_root_id, bounds)].into_iter().collect();
+        Self {
             windows: Default::default(),
             containers: Default::default(),
-            roots,
-            displayed_root: first_root_id,
+            // roots,
             cctor: Some(cctor),
             default_padding,
             container_idgen,
             window_idgen: 123, // Not 0, see above
-        };
-        this.containers.insert(
-            first_root_id,
-            Container {
-                bounds,
-                children: Default::default(),
-                inter: 0,
-                parent: None,
-                strategy: LayoutStrategy::Horizontal,
-                data: root_data,
-                padding: default_padding,
-            },
-        );
-        this
+        }
+        // this.containers.insert(
+        //     first_root_id,
+        //     Container {
+        //         bounds,
+        //         children: Default::default(),
+        //         inter: 0,
+        //         parent: None,
+        //         strategy: LayoutStrategy::Horizontal,
+        //         data: root_data,
+        //         padding: default_padding,
+        //     },
+        // );
+        // this
     }
     pub fn windows<'a>(&'a self) -> impl Iterator<Item = &'a Window<W>> {
         self.windows.values()
@@ -837,7 +858,7 @@ where
         let root_ctr = bounds.position.root_ctr;
         info!("Resizing in wb: {:?}", bounds);
         self.containers.get_mut(&root_ctr).unwrap().bounds = bounds;
-        *(self.roots.get_mut(&root_ctr).unwrap()) = bounds;
+        // *(self.roots.get_mut(&root_ctr).unwrap()) = bounds;
         let mut out = vec![];
         self.layout(ItemIdx::Container(root_ctr), &mut out);
         out.push(LayoutAction::NewBounds {
@@ -936,21 +957,22 @@ where
             .collect::<Vec<_>>();
         match parent {
             None => {
-                // we destroyed the displayed root, but there must always be a displayed root.
-                if ItemIdx::Container(self.displayed_root) == item {
-                    self.containers.insert(
-                        self.displayed_root,
-                        Container {
-                            strategy: LayoutStrategy::Horizontal,
-                            children: vec![],
-                            parent: None,
-                            inter: Default::default(),
-                            bounds: self.root_bounds(item),
-                            data: self.cctor.as_mut().expect("Must set cctor!").construct(),
-                            padding: self.default_padding,
-                        },
-                    );
-                }
+                // we destroyed a root, but roots must be destroyed explicitly.
+                let ItemIdx::Container(ctr_idx) = item else {
+                    panic!("Non-container can't be a root");
+                };
+                self.containers.insert(
+                    ctr_idx,
+                    Container {
+                        strategy: LayoutStrategy::Horizontal,
+                        children: vec![],
+                        parent: None,
+                        inter: Default::default(),
+                        bounds: self.bounds(item),
+                        data: self.cctor.as_mut().expect("Must set cctor!").construct(),
+                        padding: self.default_padding,
+                    },
+                );
             }
             Some(mut parent) => {
                 let index_in_parent = index_in_parent.unwrap();

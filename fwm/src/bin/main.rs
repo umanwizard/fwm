@@ -459,6 +459,7 @@ struct WmState {
     pub struts_frontier: MutableAntichain<StrutPartial>,
     pub current_strut: StrutPartial,
     pub root_size: AreaSize,
+    pub displayed_root: usize,
 }
 
 unsafe impl Send for WmState {}
@@ -480,7 +481,7 @@ impl WmState {
             .root_size
             .height
             .saturating_sub((self.current_strut.top + self.current_strut.bottom) as usize);
-        let root_ctr = self.layout.displayed_root();
+        let root_ctr = self.displayed_root;
         let new_bounds = WindowBounds {
             position: Position {
                 x: self.current_strut.left as usize,
@@ -492,7 +493,7 @@ impl WmState {
                 width: content_width,
             },
         };
-        if new_bounds != self.layout.root_bounds(ItemIdx::Container(root_ctr)) {
+        if new_bounds != self.layout.bounds(ItemIdx::Container(root_ctr)) {
             self.do_and_recompute(|wm| wm.layout.resize(new_bounds))
         }
     }
@@ -649,7 +650,7 @@ impl WmState {
     unsafe fn unmap_all(&self) {
         for item in self
             .layout
-            .iter_descendants(ItemIdx::Container(self.layout.displayed_root()))
+            .iter_descendants(ItemIdx::Container(self.displayed_root))
         {
             if let Some(decos) = self.try_decorations(item) {
                 for deco in [decos.up, decos.left, decos.down, decos.right] {
@@ -671,7 +672,7 @@ impl WmState {
     unsafe fn map_all(&self) {
         for item in self
             .layout
-            .iter_descendants(ItemIdx::Container(self.layout.displayed_root()))
+            .iter_descendants(ItemIdx::Container(self.displayed_root))
         {
             if let Some(decos) = self.try_decorations(item) {
                 for deco in [decos.up, decos.left, decos.down, decos.right] {
@@ -702,8 +703,11 @@ impl WmState {
             unsafe { XInternAtom(display, std::mem::transmute(b"WM_DELETE_WINDOW\0"), 0) };
         let protocols_atom =
             unsafe { XInternAtom(display, std::mem::transmute(b"WM_PROTOCOLS\0"), 0) };
-        let layout = Layout::new(size, ContainerDataConstructor { display, root }, 6);
-        let displayed_root = layout.displayed_root();
+        let mut cctor = ContainerDataConstructor { display, root };
+        let root_data = cctor.construct();
+        let mut layout = Layout::new(cctor, 6);
+
+        let displayed_root = layout.alloc_root(size, root_data);
         Self {
             client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
@@ -715,15 +719,13 @@ impl WmState {
             struts: Default::default(),
             struts_frontier: MutableAntichain::new(),
             current_strut: Default::default(),
-            root_size: AreaSize {
-                height: 0,
-                width: 0,
-            },
+            root_size: size,
 
             display,
             root,
             delete_window_atom,
             protocols_atom,
+            displayed_root,
         }
     }
 
@@ -1296,13 +1298,13 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
 
     wm.do_and_recompute(|wm| {
         Some(LayoutAction::NewBounds {
-            idx: ItemIdx::Container(wm.layout.displayed_root()),
+            idx: ItemIdx::Container(wm.displayed_root),
             bounds: WindowBounds {
                 content: root_size,
                 position: Position {
                     x: 0,
                     y: 0,
-                    root_ctr: wm.layout.displayed_root(),
+                    root_ctr: wm.displayed_root,
                 },
             },
         })
@@ -1420,7 +1422,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                         let position = Position {
                             x: x_root as usize,
                             y: y_root as usize,
-                            root_ctr: wm.layout.displayed_root(),
+                            root_ctr: wm.displayed_root,
                         };
                         let w_idx = wm.layout.window_at(position);
                         let point = w_idx.map(|w_idx| ItemIdx::Window(w_idx));
@@ -1556,7 +1558,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                         decorations,
                                         template: BASIC_DECO,
                                     },
-                                    wm.layout.displayed_root(),
+                                    wm.displayed_root,
                                 );
                                 wm.client_window_to_item_idx.insert(window, w_idx);
                                 let actions =
@@ -1789,8 +1791,7 @@ unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
         let topo_next = wm.layout.topological_next(wm.point);
         let actions = wm.layout.destroy(point);
         if !wm.layout.exists(wm.point) {
-            wm.point =
-                topo_next.unwrap_or_else(|| wm.layout.topological_last(wm.layout.displayed_root()));
+            wm.point = topo_next.unwrap_or_else(|| wm.layout.topological_last(wm.displayed_root));
         }
         actions
     });
@@ -1833,7 +1834,7 @@ unsafe extern "C" fn new_window_at(state: SCM, cursor: SCM) -> SCM {
             decorations,
             template: BASIC_DECO,
         },
-        wm.layout.displayed_root(),
+        wm.displayed_root,
     );
     match cur {
         MoveOrReplace::Move(cur) => {
@@ -1937,7 +1938,7 @@ unsafe extern "C" fn child_location(state: SCM, point: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
     let loc = wm.layout.child_location(point).unwrap_or(ChildLocation {
-        container: wm.layout.displayed_root(),
+        container: wm.displayed_root,
         index: 0,
     });
     let scm = loc.serialize(Serializer::default()).unwrap();
@@ -2013,7 +2014,7 @@ unsafe extern "C" fn show_root(state: SCM, root: SCM) -> SCM {
             wm.unmap_all();
         }
         Some(root) => {
-            if root == wm.layout.displayed_root() {
+            if root == wm.displayed_root {
                 wm.map_all();
             } else {
                 todo!()
