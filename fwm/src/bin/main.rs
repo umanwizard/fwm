@@ -1258,9 +1258,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                 position: Position {
                     x: 0,
                     y: 0,
-                    root_ctr: wm.layout.displayed_root()
-                }
-            }
+                    root_ctr: wm.layout.displayed_root(),
+                },
+            },
         })
     });
 
@@ -1503,14 +1503,15 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                         wm.do_and_recompute(|wm| match insert_cursor {
                             MoveOrReplace::Move(insert_cursor) => {
                                 let decorations = make_decorations(display, root);
-                                let w_idx = wm.layout.alloc_window(WindowData {
-                                    client: Some(X11ClientWindowData {
-                                        window,
-                                        mapped: false,
-                                    }),
-                                    decorations,
-                                    template: BASIC_DECO,
-                                },
+                                let w_idx = wm.layout.alloc_window(
+                                    WindowData {
+                                        client: Some(X11ClientWindowData {
+                                            window,
+                                            mapped: false,
+                                        }),
+                                        decorations,
+                                        template: BASIC_DECO,
+                                    },
                                     wm.layout.displayed_root(),
                                 );
                                 wm.client_window_to_item_idx.insert(window, w_idx);
@@ -1744,7 +1745,8 @@ unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
         let topo_next = wm.layout.topological_next(wm.point);
         let actions = wm.layout.destroy(point);
         if !wm.layout.exists(wm.point) {
-            wm.point = topo_next.unwrap_or_else(|| wm.layout.topological_last(wm.layout.displayed_root()));
+            wm.point =
+                topo_next.unwrap_or_else(|| wm.layout.topological_last(wm.layout.displayed_root()));
         }
         actions
     });
@@ -1781,11 +1783,14 @@ unsafe extern "C" fn new_window_at(state: SCM, cursor: SCM) -> SCM {
     let cur = MoveOrReplace::deserialize(Deserializer { scm: cursor }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let decorations = make_decorations(wm.display, wm.root);
-    let win = wm.layout.alloc_window(WindowData {
-        client: None,
-        decorations,
-        template: BASIC_DECO,
-    }, wm.layout.displayed_root());
+    let win = wm.layout.alloc_window(
+        WindowData {
+            client: None,
+            decorations,
+            template: BASIC_DECO,
+        },
+        wm.layout.displayed_root(),
+    );
     match cur {
         MoveOrReplace::Move(cur) => {
             wm.do_and_recompute(|wm| wm.layout.r#move(ItemIdx::Window(win), cur));

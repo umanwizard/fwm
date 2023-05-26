@@ -456,7 +456,7 @@ where
                 let ctr = self.containers.get_mut(&parent).unwrap();
                 ctr.children[index_in_parent].1 = ItemIdx::Container(next_c_idx);
                 self.set_parent_unchecked(inserted, Some(next_c_idx));
-                self.set_parent_unchecked(split, Some(next_c_idx));                
+                self.set_parent_unchecked(split, Some(next_c_idx));
                 next_c_idx
             }
             None => {
@@ -477,7 +477,11 @@ where
                     }
                     _ => {
                         let next_c_idx = self.container_idgen.next_id();
-                        let root_children = self.children(root_ctr_idx).iter().map(|(_, idx)| *idx).collect::<Vec<_>>();
+                        let root_children = self
+                            .children(root_ctr_idx)
+                            .iter()
+                            .map(|(_, idx)| *idx)
+                            .collect::<Vec<_>>();
                         for child in root_children {
                             self.set_parent_unchecked(child, Some(next_c_idx))
                         }
@@ -498,7 +502,7 @@ where
                                     x: 0,
                                     y: 0,
                                     root_ctr: root_ctr_idx,
-                                }
+                                },
                             },
                             inter: *inter,
                             parent: Some(root_ctr_idx),
@@ -794,8 +798,8 @@ where
             position: Position {
                 x: 0,
                 y: 0,
-                root_ctr: first_root_id
-            }
+                root_ctr: first_root_id,
+            },
         };
         let roots = [(first_root_id, bounds)].into_iter().collect();
         let mut this = Self {
@@ -992,7 +996,7 @@ where
                         x: 0,
                         y: 0,
                         root_ctr,
-                    }
+                    },
                 },
                 parent: None,
                 data,
