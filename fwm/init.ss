@@ -228,6 +228,16 @@
 							    (clear-wallpaper)
 							    (set-wallpaper)
 							    ))
+     (cons (fwm-parse-key-combo (string-append mod "+0")) (lambda (wm) (switch-to-root wm 0)))
+     (cons (fwm-parse-key-combo (string-append mod "+1")) (lambda (wm) (switch-to-root wm 1)))
+     (cons (fwm-parse-key-combo (string-append mod "+2")) (lambda (wm) (switch-to-root wm 2)))
+     (cons (fwm-parse-key-combo (string-append mod "+3")) (lambda (wm) (switch-to-root wm 3)))
+     (cons (fwm-parse-key-combo (string-append mod "+4")) (lambda (wm) (switch-to-root wm 4)))
+     (cons (fwm-parse-key-combo (string-append mod "+5")) (lambda (wm) (switch-to-root wm 5)))
+     (cons (fwm-parse-key-combo (string-append mod "+6")) (lambda (wm) (switch-to-root wm 6)))
+     (cons (fwm-parse-key-combo (string-append mod "+7")) (lambda (wm) (switch-to-root wm 7)))
+     (cons (fwm-parse-key-combo (string-append mod "+8")) (lambda (wm) (switch-to-root wm 8)))
+     (cons (fwm-parse-key-combo (string-append mod "+9")) (lambda (wm) (switch-to-root wm 9)))
      ;; (cons (fwm-parse-key-combo (string-append mod "+backslash")) (at-point fwm-toggle-map))
      (cons (fwm-parse-key-combo (string-append mod "+shift+x"))
 	   (lambda (x)
@@ -288,6 +298,18 @@
 
 (define protected-points '())
 
+(define roots (make-vector 10 #f))
+
+(define (switch-to-root wm idx)
+  (unless (vector-ref roots idx)
+    (let ([root (fwm-alloc-root wm)])
+      (vector-set! roots idx root))
+    (println "roots now:" roots))
+  (let ([root (vector-ref roots idx)])
+    (println "setting point:" `(Container . ,root))
+    (fwm-set-point wm `(Container . ,root))
+    (fwm-show-root wm `(,root))))
+
 (fwm-run-wm
  (list
   (cons 'bindings  bindings)
@@ -307,8 +329,10 @@
               (fwm-set-point wm point)))))
   
  (cons 'after-start
-       (lambda (_)
+       (lambda (wm)
 	 (exec "xmobar")
-     (exec "stalonetray --window-strut top")))
+         (exec "stalonetray --window-strut top")
+         (switch-to-root wm 1)         
+         ))
  ))
 

@@ -138,6 +138,7 @@ use x11::xlib::XWindowChanges;
 use x11::xlib::CWX;
 use x11::xlib::CWY;
 
+use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -155,6 +156,7 @@ use std::os::raw::c_ulong;
 use std::os::unix::io::RawFd;
 use std::ptr::null;
 use std::ptr::null_mut;
+use std::rc::Rc;
 
 #[derive(Debug)]
 struct ProtectedScm(SCM);
@@ -177,7 +179,7 @@ impl Drop for ProtectedScm {
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 struct X11ClientWindowData {
     window: x11::xlib::Window,
-    mapped: bool,
+    map_wanted: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq)]
@@ -380,7 +382,7 @@ unsafe fn configure_decorations(
         display,
         d.down,
         bounds.position.x.try_into().unwrap(),
-        (bounds.position.y + bounds.content.height - t.down.width)
+        (bounds.position.y + bounds.content.height.saturating_sub(t.down.width))
             .try_into()
             .unwrap(),
         bounds.content.width.try_into().unwrap(),
@@ -389,7 +391,7 @@ unsafe fn configure_decorations(
     XMoveResizeWindow(
         display,
         d.right,
-        (bounds.position.x + bounds.content.width - t.right.width)
+        (bounds.position.x + bounds.content.width.saturating_sub(t.right.width))
             .try_into()
             .unwrap(),
         bounds.position.y.try_into().unwrap(),
@@ -444,7 +446,6 @@ struct ContainerData {
 struct WmState {
     pub client_window_to_item_idx: HashMap<x11::xlib::Window, usize>,
     pub bindings: HashMap<KeyCombo, ProtectedScm>,
-    //    pub on_point_changed: ProtectedScm,
     pub layout: Layout<WindowData, ContainerData, ContainerDataConstructor>,
     pub point: ItemIdx,
     pub cursor: Option<MoveCursor>,
@@ -459,7 +460,7 @@ struct WmState {
     pub struts_frontier: MutableAntichain<StrutPartial>,
     pub current_strut: StrutPartial,
     pub root_size: AreaSize,
-    pub displayed_root: usize,
+    pub displayed_root: Option<usize>,
 }
 
 unsafe impl Send for WmState {}
@@ -473,28 +474,29 @@ fn outer_to_inner_size(outer: AreaSize, dt: &WindowDecorationsTemplate) -> AreaS
 
 impl WmState {
     fn do_resize(&mut self) {
-        let content_width = self
-            .root_size
-            .width
-            .saturating_sub((self.current_strut.left + self.current_strut.right) as usize);
-        let content_height = self
-            .root_size
-            .height
-            .saturating_sub((self.current_strut.top + self.current_strut.bottom) as usize);
-        let root_ctr = self.displayed_root;
-        let new_bounds = WindowBounds {
-            position: Position {
-                x: self.current_strut.left as usize,
-                y: self.current_strut.top as usize,
-                root_ctr,
-            },
-            content: AreaSize {
-                height: content_height,
-                width: content_width,
-            },
-        };
-        if new_bounds != self.layout.bounds(ItemIdx::Container(root_ctr)) {
-            self.do_and_recompute(|wm| wm.layout.resize(new_bounds))
+        if let Some(root_ctr) = self.displayed_root {
+            let content_width = self
+                .root_size
+                .width
+                .saturating_sub((self.current_strut.left + self.current_strut.right) as usize);
+            let content_height = self
+                .root_size
+                .height
+                .saturating_sub((self.current_strut.top + self.current_strut.bottom) as usize);
+            let new_bounds = WindowBounds {
+                position: Position {
+                    x: self.current_strut.left as usize,
+                    y: self.current_strut.top as usize,
+                    root_ctr,
+                },
+                content: AreaSize {
+                    height: content_height,
+                    width: content_width,
+                },
+            };
+            if new_bounds != self.layout.bounds(ItemIdx::Container(root_ctr)) {
+                self.do_and_recompute(|wm| wm.layout.resize(new_bounds))
+            }
         }
     }
     unsafe fn call_on_point_changed(&mut self) {
@@ -510,7 +512,9 @@ impl WmState {
                 client:
                     Some(X11ClientWindowData {
                         window,
-                        mapped: true,
+                        // XXX - what happens if we set focus on an unmapped window?
+                        // mapped: true,
+                        ..
                     }),
                 ..
             } = self
@@ -648,44 +652,48 @@ impl WmState {
     }
 
     unsafe fn unmap_all(&self) {
-        for item in self
-            .layout
-            .iter_descendants(ItemIdx::Container(self.displayed_root))
-        {
-            if let Some(decos) = self.try_decorations(item) {
-                for deco in [decos.up, decos.left, decos.down, decos.right] {
-                    self.request_unmap(deco);
+        if let Some(displayed_root) = self.displayed_root {
+            for item in self
+                .layout
+                .iter_descendants(ItemIdx::Container(displayed_root))
+            {
+                if let Some(decos) = self.try_decorations(item) {
+                    for deco in [decos.up, decos.left, decos.down, decos.right] {
+                        self.request_unmap(deco);
+                    }
                 }
-            }
-            if let ItemIdx::Window(w_idx) = item {
-                if let Some(client) = self
-                    .layout
-                    .try_window_data(w_idx)
-                    .and_then(|data| data.client.as_ref())
-                {
-                    self.request_unmap(client.window);
+                if let ItemIdx::Window(w_idx) = item {
+                    if let Some(client) = self
+                        .layout
+                        .try_window_data(w_idx)
+                        .and_then(|data| data.client.as_ref())
+                    {
+                        self.request_unmap(client.window);
+                    }
                 }
             }
         }
     }
 
     unsafe fn map_all(&self) {
-        for item in self
-            .layout
-            .iter_descendants(ItemIdx::Container(self.displayed_root))
-        {
-            if let Some(decos) = self.try_decorations(item) {
-                for deco in [decos.up, decos.left, decos.down, decos.right] {
-                    self.request_map(deco);
+        if let Some(displayed_root) = self.displayed_root {
+            for item in self
+                .layout
+                .iter_descendants(ItemIdx::Container(displayed_root))
+            {
+                if let Some(decos) = self.try_decorations(item) {
+                    for deco in [decos.up, decos.left, decos.down, decos.right] {
+                        self.request_map(deco);
+                    }
                 }
-            }
-            if let ItemIdx::Window(w_idx) = item {
-                if let Some(client) = self
-                    .layout
-                    .try_window_data(w_idx)
-                    .and_then(|data| data.client.as_ref())
-                {
-                    self.request_map(client.window);
+                if let ItemIdx::Window(w_idx) = item {
+                    if let Some(client) = self
+                        .layout
+                        .try_window_data(w_idx)
+                        .and_then(|data| data.client.as_ref())
+                    {
+                        self.request_map(client.window);
+                    }
                 }
             }
         }
@@ -703,17 +711,15 @@ impl WmState {
             unsafe { XInternAtom(display, std::mem::transmute(b"WM_DELETE_WINDOW\0"), 0) };
         let protocols_atom =
             unsafe { XInternAtom(display, std::mem::transmute(b"WM_PROTOCOLS\0"), 0) };
-        let mut cctor = ContainerDataConstructor { display, root };
-        let root_data = cctor.construct();
-        let mut layout = Layout::new(cctor, 6);
+        let cctor = ContainerDataConstructor { display, root };
+        let layout = Layout::new(cctor, 6);
 
-        let displayed_root = layout.alloc_root(size, root_data);
         Self {
             client_window_to_item_idx: Default::default(),
             bindings: Default::default(),
             on_point_changed,
             layout,
-            point: ItemIdx::Container(displayed_root),
+            point: ItemIdx::Container(0), // XXX invalid point. Need to rethink how points work. Optional?
             cursor: None,
             focused: None,
             struts: Default::default(),
@@ -725,8 +731,12 @@ impl WmState {
             root,
             delete_window_atom,
             protocols_atom,
-            displayed_root,
+            displayed_root: None,
         }
+    }
+
+    pub fn alloc_root(&mut self) -> usize {
+        self.layout.alloc_root()
     }
 
     fn compute_and_set_strut(&mut self) -> bool {
@@ -1296,19 +1306,19 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
     let mut wm = WmState::new(display, root, root_size, on_point_changed);
     wm.root_size = root_size;
 
-    wm.do_and_recompute(|wm| {
-        Some(LayoutAction::NewBounds {
-            idx: ItemIdx::Container(wm.displayed_root),
-            bounds: WindowBounds {
-                content: root_size,
-                position: Position {
-                    x: 0,
-                    y: 0,
-                    root_ctr: wm.displayed_root,
-                },
-            },
-        })
-    });
+    // wm.do_and_recompute(|wm| {
+    //     Some(LayoutAction::NewBounds {
+    //         idx: ItemIdx::Container(wm.displayed_root),
+    //         bounds: WindowBounds {
+    //             content: root_size,
+    //             position: Position {
+    //                 x: 0,
+    //                 y: 0,
+    //                 root_ctr: wm.displayed_root,
+    //             },
+    //         },
+    //     })
+    // });
 
     let wm_scm = make_foreign_object_from_ref(&mut wm, WM_STATE_TYPE);
 
@@ -1419,18 +1429,22 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                     } = e.button;
                     let point = {
                         let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
-                        let position = Position {
-                            x: x_root as usize,
-                            y: y_root as usize,
-                            root_ctr: wm.displayed_root,
-                        };
-                        let w_idx = wm.layout.window_at(position);
-                        let point = w_idx.map(|w_idx| ItemIdx::Window(w_idx));
-                        info!(
-                            "Button pressed at position {:?}, corresponding point {:?}",
-                            position, point
-                        );
-                        point
+                        if let Some(displayed_root) = wm.displayed_root {
+                            let position = Position {
+                                x: x_root as usize,
+                                y: y_root as usize,
+                                root_ctr: displayed_root,
+                            };
+                            let w_idx = wm.layout.window_at(position);
+                            let point = w_idx.map(|w_idx| ItemIdx::Window(w_idx));
+                            info!(
+                                "Button pressed at position {:?}, corresponding point {:?}",
+                                position, point
+                            );
+                            point
+                        } else {
+                            None
+                        }
                     };
                     scm_apply_2(
                         on_button1_pressed,
@@ -1548,17 +1562,20 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 .expect("XXX");
                         wm.do_and_recompute(|wm| match insert_cursor {
                             MoveOrReplace::Move(insert_cursor) => {
+                                let root_ctr =
+                                    wm.layout.bounds(insert_cursor.item()).position.root_ctr;
                                 let decorations = make_decorations(display, root);
                                 let w_idx = wm.layout.alloc_window(
                                     WindowData {
                                         client: Some(X11ClientWindowData {
                                             window,
-                                            mapped: false,
+                                            map_wanted: true,
+                                            // mapped: false,
                                         }),
                                         decorations,
                                         template: BASIC_DECO,
                                     },
-                                    wm.displayed_root,
+                                    root_ctr,
                                 );
                                 wm.client_window_to_item_idx.insert(window, w_idx);
                                 let actions =
@@ -1567,6 +1584,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                 XRaiseWindow(wm.display, window);
                                 actions
                             }
+                            // XXX is it actually right to destroy the
                             MoveOrReplace::Replace(ItemIdx::Window(w_idx)) => {
                                 let old_bounds = wm.layout.bounds(ItemIdx::Window(w_idx));
 
@@ -1581,11 +1599,14 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                                         .client,
                                     Some(X11ClientWindowData {
                                         window,
-                                        mapped: false,
+                                        map_wanted: true,
                                     }),
                                 );
                                 XRaiseWindow(wm.display, window);
-                                if let Some(X11ClientWindowData { window, mapped: _ }) = old_client
+                                if let Some(X11ClientWindowData {
+                                    window,
+                                    map_wanted: _,
+                                }) = old_client
                                 {
                                     XDestroyWindow(wm.display, window);
                                 }
@@ -1608,7 +1629,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             let mut client = client
                                 .as_mut()
                                 .expect("Layout out of sync with client_window_to_item_idx");
-                            client.mapped = true;
+                            // client.mapped = true;
                         }
                     } else {
                         // Mapping was never requested -- is this a dock/bar ? Check strut property to see.
@@ -1631,7 +1652,7 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             .try_window_data_mut(*w_idx)
                             .and_then(|data| data.client.as_mut())
                         {
-                            client.mapped = false;
+                            // client.mapped = false;
                         }
                     }
                     wm.ensure_focus();
@@ -1768,6 +1789,15 @@ enum MoveOrReplace {
     Replace(ItemIdx),
 }
 
+impl MoveOrReplace {
+    fn item(&self) -> ItemIdx {
+        match self {
+            Self::Move(move_cursor) => move_cursor.item(),
+            Self::Replace(item) => *item,
+        }
+    }
+}
+
 unsafe extern "C" fn make_cursor_into(container: SCM, index: SCM) -> SCM {
     let container = scm_to_uint64(container).try_into().unwrap();
     let index = scm_to_uint64(index).try_into().unwrap();
@@ -1791,7 +1821,13 @@ unsafe extern "C" fn kill_item_at(state: SCM, point: SCM) -> SCM {
         let topo_next = wm.layout.topological_next(wm.point);
         let actions = wm.layout.destroy(point);
         if !wm.layout.exists(wm.point) {
-            wm.point = topo_next.unwrap_or_else(|| wm.layout.topological_last(wm.displayed_root));
+            // XXX Point should be none!
+            wm.point = topo_next
+                .or_else(|| {
+                    wm.displayed_root
+                        .map(|displayed_root| wm.layout.topological_last(displayed_root))
+                })
+                .unwrap_or(ItemIdx::Container(0));
         }
         actions
     });
@@ -1827,6 +1863,7 @@ unsafe extern "C" fn request_kill_client_at(state: SCM, window: SCM) -> SCM {
 unsafe extern "C" fn new_window_at(state: SCM, cursor: SCM) -> SCM {
     let cur = MoveOrReplace::deserialize(Deserializer { scm: cursor }).expect("XXX");
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let root_ctr = wm.layout.bounds(cur.item()).position.root_ctr;
     let decorations = make_decorations(wm.display, wm.root);
     let win = wm.layout.alloc_window(
         WindowData {
@@ -1834,7 +1871,7 @@ unsafe extern "C" fn new_window_at(state: SCM, cursor: SCM) -> SCM {
             decorations,
             template: BASIC_DECO,
         },
-        wm.displayed_root,
+        root_ctr,
     );
     match cur {
         MoveOrReplace::Move(cur) => {
@@ -1937,8 +1974,10 @@ unsafe extern "C" fn nth_child(state: SCM, container: SCM, index: SCM) -> SCM {
 unsafe extern "C" fn child_location(state: SCM, point: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let point = ItemIdx::deserialize(Deserializer { scm: point }).expect("XXX");
+    // XXX this is wrong
+    let displayed_root = wm.displayed_root.unwrap_or(0);
     let loc = wm.layout.child_location(point).unwrap_or(ChildLocation {
-        container: wm.displayed_root,
+        container: displayed_root,
         index: 0,
     });
     let scm = loc.serialize(Serializer::default()).unwrap();
@@ -2012,17 +2051,28 @@ unsafe extern "C" fn show_root(state: SCM, root: SCM) -> SCM {
     match root {
         None => {
             wm.unmap_all();
+            wm.displayed_root = None;
         }
         Some(root) => {
-            if root == wm.displayed_root {
+            let old = wm.displayed_root;
+            if old != Some(root) {
+                wm.unmap_all();
+            }
+            wm.displayed_root = Some(root);
+            if old != wm.displayed_root {
+                wm.do_resize();
                 wm.map_all();
-            } else {
-                todo!()
             }
         }
     }
 
     SCM_UNSPECIFIED
+}
+
+unsafe extern "C" fn alloc_root(state: SCM) -> SCM {
+    let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
+    let root = wm.layout.alloc_root();
+    root.serialize(Serializer::default()).unwrap()
 }
 
 unsafe extern "C" fn _debug_force_resize(state: SCM, width: SCM, height: SCM) -> SCM {
@@ -2109,6 +2159,8 @@ unsafe extern "C" fn scheme_setup(_data: *mut c_void) -> *mut c_void {
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, equalize_lengths as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-show-root\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 2, 0, 0, show_root as *mut c_void);
+    let c = CStr::from_bytes_with_nul(b"fwm-alloc-root\0").unwrap();
+    scm_c_define_gsubr(c.as_ptr(), 1, 0, 0, alloc_root as *mut c_void);
     let c = CStr::from_bytes_with_nul(b"fwm-DEBUG-force-resize\0").unwrap();
     scm_c_define_gsubr(c.as_ptr(), 3, 0, 0, _debug_force_resize as *mut c_void);
     std::ptr::null_mut()

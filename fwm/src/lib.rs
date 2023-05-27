@@ -786,10 +786,11 @@ where
         }
     }
     /// Make a new root. Returns its container index.
-    pub fn alloc_root(&mut self, size: AreaSize, data: C) -> usize {
+    pub fn alloc_root(&mut self) -> usize {
         let idx = self.container_idgen.next_id();
+        let data = self.cctor.as_mut().expect("cctor must exist").construct();
         let bounds = WindowBounds {
-            content: size,
+            content: Default::default(),
             position: Position {
                 x: 0,
                 y: 0,
@@ -813,17 +814,17 @@ where
     }
     pub fn new(cctor: CCtor, default_padding: usize) -> Self {
         // let root_data = cctor.construct();
-        let mut container_idgen = 42; // Not 0, in order to crash loudly if we're doing something special on 0.
-                                      // let first_root_id = container_idgen.next_id();
-                                      // let bounds = WindowBounds {
-                                      //     content: size,
-                                      //     position: Position {
-                                      //         x: 0,
-                                      //         y: 0,
-                                      //         root_ctr: first_root_id,
-                                      //     },
-                                      // };
-                                      // let roots = [(first_root_id, bounds)].into_iter().collect();
+        let container_idgen = 42; // Not 0, in order to crash loudly if we're doing something special on 0.
+                                  // let first_root_id = container_idgen.next_id();
+                                  // let bounds = WindowBounds {
+                                  //     content: size,
+                                  //     position: Position {
+                                  //         x: 0,
+                                  //         y: 0,
+                                  //         root_ctr: first_root_id,
+                                  //     },
+                                  // };
+                                  // let roots = [(first_root_id, bounds)].into_iter().collect();
         Self {
             windows: Default::default(),
             containers: Default::default(),
