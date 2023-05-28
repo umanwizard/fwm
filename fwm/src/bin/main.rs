@@ -831,7 +831,7 @@ impl WmState {
                                 bounds,
                                 &data.decorations,
                                 &data.template,
-                                Some(bounds.position.root_ctr) == self.displayed_root
+                                Some(bounds.position.root_ctr) == self.displayed_root,
                             );
                         }
                     }
@@ -1623,7 +1623,9 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             }
                             MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!(),
                         });
-                        if Some(wm.layout.bounds(insert_cursor.item()).position.root_ctr) == wm.displayed_root {
+                        if Some(wm.layout.bounds(insert_cursor.item()).position.root_ctr)
+                            == wm.displayed_root
+                        {
                             XMapWindow(display, window);
                         }
                     }
@@ -2060,7 +2062,7 @@ unsafe extern "C" fn show_root(state: SCM, root: SCM) -> SCM {
         wm.unmap_all();
         wm.focused = None;
         wm.ensure_focus();
-        
+
         wm.displayed_root = root;
         wm.do_resize();
         wm.map_all();
