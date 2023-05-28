@@ -344,10 +344,6 @@ unsafe fn make_decorations(display: *mut Display, root: x11::xlib::Window) -> Wi
     let up = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
     let right = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
     let down = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
-    XMapWindow(display, left);
-    XMapWindow(display, up);
-    XMapWindow(display, right);
-    XMapWindow(display, down);
     WindowDecorations {
         left,
         up,
@@ -361,6 +357,7 @@ unsafe fn configure_decorations(
     bounds: WindowBounds,
     d: &WindowDecorations,
     t: &WindowDecorationsTemplate,
+    should_map: bool,
 ) {
     XMoveResizeWindow(
         display,
@@ -407,6 +404,12 @@ unsafe fn configure_decorations(
     XClearWindow(display, d.up);
     XClearWindow(display, d.right);
     XClearWindow(display, d.down);
+    if should_map {
+        XMapWindow(display, d.left);
+        XMapWindow(display, d.up);
+        XMapWindow(display, d.right);
+        XMapWindow(display, d.down);
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -627,6 +630,7 @@ impl WmState {
                         bounds,
                         self.try_decorations(item).unwrap(),
                         rt,
+                        Some(bounds.position.root_ctr) == self.displayed_root,
                     );
                 }
             }
@@ -827,6 +831,7 @@ impl WmState {
                                 bounds,
                                 &data.decorations,
                                 &data.template,
+                                Some(bounds.position.root_ctr) == self.displayed_root
                             );
                         }
                     }
@@ -839,6 +844,7 @@ impl WmState {
                             bounds,
                             &data.decorations,
                             &data.template,
+                            Some(bounds.position.root_ctr) == self.displayed_root,
                         );
                     }
                 }
@@ -1617,8 +1623,10 @@ unsafe extern "C" fn run_wm(config: SCM) -> SCM {
                             }
                             MoveOrReplace::Replace(ItemIdx::Container(_c_idx)) => todo!(),
                         });
+                        if Some(wm.layout.bounds(insert_cursor.item()).position.root_ctr) == wm.displayed_root {
+                            XMapWindow(display, window);
+                        }
                     }
-                    XMapWindow(display, window);
                 }
                 x11::xlib::MapNotify => {
                     let wm = get_foreign_object::<WmState>(wm_scm.inner, WM_STATE_TYPE);
@@ -2048,22 +2056,14 @@ unsafe extern "C" fn show_root(state: SCM, root: SCM) -> SCM {
     let wm = get_foreign_object::<WmState>(state, WM_STATE_TYPE);
     let root = Option::<usize>::deserialize(Deserializer { scm: root }).expect("XXX");
 
-    match root {
-        None => {
-            wm.unmap_all();
-            wm.displayed_root = None;
-        }
-        Some(root) => {
-            let old = wm.displayed_root;
-            if old != Some(root) {
-                wm.unmap_all();
-            }
-            wm.displayed_root = Some(root);
-            if old != wm.displayed_root {
-                wm.do_resize();
-                wm.map_all();
-            }
-        }
+    if wm.displayed_root != root {
+        wm.unmap_all();
+        wm.focused = None;
+        wm.ensure_focus();
+        
+        wm.displayed_root = root;
+        wm.do_resize();
+        wm.map_all();
     }
 
     SCM_UNSPECIFIED
